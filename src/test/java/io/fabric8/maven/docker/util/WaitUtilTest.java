@@ -1,41 +1,47 @@
 package io.fabric8.maven.docker.util;
 
+import com.sun.net.httpserver.HttpServer;
+import io.fabric8.maven.docker.config.WaitConfiguration;
+import io.fabric8.maven.docker.wait.HttpPingChecker;
+import io.fabric8.maven.docker.wait.PreconditionFailedException;
+import io.fabric8.maven.docker.wait.TcpPortChecker;
+import io.fabric8.maven.docker.wait.WaitChecker;
+import io.fabric8.maven.docker.wait.WaitTimeoutException;
+import io.fabric8.maven.docker.wait.WaitUtil;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.Collections;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
-import io.fabric8.maven.docker.config.WaitConfiguration;
-import io.fabric8.maven.docker.wait.*;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
-
-import static org.assertj.core.api.Assertions.fail;
-import static org.junit.Assert.*;
+import static org.mockito.Mockito.mock;
 
 /**
  * @author roland
  * @since 18.10.14
  */
 @SuppressWarnings("restriction")
-public class WaitUtilTest {
+class WaitUtilTest {
 
     static HttpServer server;
     static int port;
     static String httpPingUrl;
     private static String serverMethodToAssert;
+    private final static Logger logger = mock(Logger.class);
 
-    @Test(expected = TimeoutException.class)
-    public void httpFail() throws TimeoutException, PreconditionFailedException {
+    @Test
+    void httpFail()  {
 
-        HttpPingChecker checker = new HttpPingChecker("http://127.0.0.1:" + port + "/fake-context/");
-        wait(500, checker);
+        HttpPingChecker checker = new HttpPingChecker("http://127.0.0.1:" + port + "/fake-context/", logger);
+      Assertions.assertThrows(TimeoutException.class, ()->  wait(500, checker));
     }
 
     private static long wait(int wait, WaitChecker checker) throws WaitTimeoutException, PreconditionFailedException {
@@ -47,96 +53,94 @@ public class WaitUtilTest {
     }
 
     @Test
-    public void httpSuccess() throws TimeoutException, PreconditionFailedException {
-        HttpPingChecker checker = new HttpPingChecker(httpPingUrl);
+    void httpSuccess() throws TimeoutException, PreconditionFailedException {
+        HttpPingChecker checker = new HttpPingChecker(httpPingUrl, logger);
         long waited = wait(700, checker);
-        assertTrue("Waited less than 700ms: " + waited, waited < 700);
+        Assertions.assertTrue( waited < 700,"Waited less than 700ms: " + waited);
     }
 
     @Test
-    public void containerNotRunningButWaitConditionOk() throws TimeoutException, PreconditionFailedException {
-        HttpPingChecker checker = new HttpPingChecker(httpPingUrl);
+    void containerNotRunningButWaitConditionOk() throws TimeoutException, PreconditionFailedException {
+        HttpPingChecker checker = new HttpPingChecker(httpPingUrl, logger);
         long waited = wait(1,700, checker);
-        assertTrue("Waited less than 700ms: " + waited, waited < 700);
-    }
-
-    @Test(expected = PreconditionFailedException.class)
-    public void containerNotRunningAndWaitConditionNok() throws TimeoutException, PreconditionFailedException {
-        HttpPingChecker checker = new HttpPingChecker("http://127.0.0.1:" + port + "/fake-context/");
-        wait(0, 700, checker);
+        Assertions.assertTrue( waited < 700,"Waited less than 700ms: " + waited);
     }
 
     @Test
-    public void httpSuccessWithStatus() throws TimeoutException, PreconditionFailedException {
+    void containerNotRunningAndWaitConditionNok()  {
+        HttpPingChecker checker = new HttpPingChecker("http://127.0.0.1:" + port + "/fake-context/", logger);
+        Assertions.assertThrows(PreconditionFailedException.class, ()-> wait(0, 700, checker));
+    }
+
+    @Test
+    void httpSuccessWithStatus() throws TimeoutException, PreconditionFailedException {
         for (String status : new String[] { "200", "200 ... 300", "200..250" }) {
-            long waited = wait(700, new HttpPingChecker(httpPingUrl, WaitConfiguration.DEFAULT_HTTP_METHOD, status));
-            assertTrue("Waited less than  700ms: " + waited, waited < 700);
+            long waited = wait(700, new HttpPingChecker(httpPingUrl, WaitConfiguration.DEFAULT_HTTP_METHOD, status, logger));
+            Assertions.assertTrue( waited < 700,"Waited less than  700ms: " + waited);
         }
     }
 
-    @Test(expected = TimeoutException.class)
-    public void httpFailWithStatus() throws TimeoutException, PreconditionFailedException {
-        wait(700, new HttpPingChecker(httpPingUrl, WaitConfiguration.DEFAULT_HTTP_METHOD, "500"));
+    @Test
+    void httpFailWithStatus()  {
+        HttpPingChecker checker = new HttpPingChecker(httpPingUrl, WaitConfiguration.DEFAULT_HTTP_METHOD, "500", logger);
+        Assertions.assertThrows(TimeoutException.class, ()->wait(700, checker));
     }
 
     @Test
-    public void httpSuccessWithGetMethod() throws Exception {
+    void httpSuccessWithGetMethod() throws Exception {
         serverMethodToAssert = "GET";
         try {
-            HttpPingChecker checker = new HttpPingChecker(httpPingUrl, "GET", WaitConfiguration.DEFAULT_STATUS_RANGE);
+            HttpPingChecker checker = new HttpPingChecker(httpPingUrl, "GET", WaitConfiguration.DEFAULT_STATUS_RANGE, logger);
             long waited = wait(700, checker);
-            assertTrue("Waited less than 500ms: " + waited, waited < 700);
+            Assertions.assertTrue( waited < 700,"Waited less than 500ms: " + waited);
         } finally {
             serverMethodToAssert = "HEAD";
         }
     }
 
     @Test
-    public void tcpSuccess() throws TimeoutException, PreconditionFailedException {
+    void tcpSuccess() throws TimeoutException, PreconditionFailedException {
         TcpPortChecker checker = new TcpPortChecker("localhost", Collections.singletonList(port));
         long waited = wait(700, checker);
-        assertTrue("Waited less than 700ms: " + waited, waited < 700);
+       Assertions. assertTrue( waited < 700,"Waited less than 700ms: " + waited);
     }
 
     @Test
-    public void cleanupShouldBeCalledAfterMatchedException() throws WaitTimeoutException, PreconditionFailedException {
+    void cleanupShouldBeCalledAfterMatchedException() throws WaitTimeoutException, PreconditionFailedException {
         StubWaitChecker checker = new StubWaitChecker(true);
         wait(0, checker);
-        assertTrue(checker.isCleaned());
+        Assertions.assertTrue(checker.isCleaned());
     }
 
     @Test
-    public void cleanupShouldBeCalledAfterFailedException() throws PreconditionFailedException {
+    void cleanupShouldBeCalledAfterFailedException() throws PreconditionFailedException {
         StubWaitChecker checker = new StubWaitChecker(false);
         try {
             wait(0, checker);
-            fail("Failed expectation expected");
+            Assertions.fail("Failed expectation expected");
         } catch (WaitTimeoutException e) {
-            assertTrue(checker.isCleaned());
+            Assertions.assertTrue(checker.isCleaned());
         }
     }
 
     @Test
-    public void waitOnCallable() throws Exception {
-        long waited = waitOnCallable(1, 500);
+    void waitOnCallable() throws Exception {
+        long waited = waitOnCallable(500);
 
-        assertTrue(500 <= waited);
-        assertTrue(1000 > waited);
+        Assertions.assertTrue(500 <= waited);
+        Assertions.assertTrue(1000 > waited);
     }
 
     @Test
-    public void waitOnCallableFullWait() throws Exception {
-        long waited = waitOnCallable(1, 1000);
-        assertTrue(1000 <= waited);
+    void waitOnCallableFullWait() throws Exception {
+        long waited = waitOnCallable(1000);
+        Assertions.assertTrue(1000 <= waited);
     }
 
-    private long waitOnCallable(long wait, final long sleep) throws WaitTimeoutException, ExecutionException {
-        return WaitUtil.wait(5, new Callable<Void>() {
-            @Override
-            public Void call() throws Exception {
-                Thread.sleep(sleep);
-                return null;
-            }
+    private long waitOnCallable(final long sleep) throws WaitTimeoutException, ExecutionException {
+        return WaitUtil.wait(5, () -> {
+            Thread.sleep(sleep);
+            return null;
         });
     }
 
@@ -169,7 +173,7 @@ public class WaitUtilTest {
         }
     }
 
-    @BeforeClass
+    @BeforeAll
     public static void createServer() throws IOException {
         port = getRandomPort();
         serverMethodToAssert = "HEAD";
@@ -180,26 +184,23 @@ public class WaitUtilTest {
 
         // Prepare executor pool
         server.setExecutor(Executors.newSingleThreadExecutor());
-        server.createContext("/test/", new HttpHandler() {
-            @Override
-            public void handle(HttpExchange httpExchange) throws IOException {
-                String method = httpExchange.getRequestMethod();
-                assertEquals(serverMethodToAssert, method);
-                httpExchange.sendResponseHeaders(200, -1);
-            }
+        server.createContext("/test/", httpExchange -> {
+            String method = httpExchange.getRequestMethod();
+            Assertions.assertEquals(serverMethodToAssert, method);
+            httpExchange.sendResponseHeaders(200, -1);
         });
         httpPingUrl = "http://127.0.0.1:" + port + "/test/";
         server.start();
 
         // preload - first time use almost always lasts much longer (i'm assuming its http client initialization behavior)
         try {
-            wait(700, new HttpPingChecker(httpPingUrl));
+            wait(700, new HttpPingChecker(httpPingUrl, logger));
         } catch (TimeoutException | PreconditionFailedException exp) {
             // expected
         }
     }
 
-    @AfterClass
+    @AfterAll
     public static void cleanupServer() {
         server.stop(1);
     }
@@ -220,7 +221,6 @@ public class WaitUtilTest {
             return true;
         } catch (IOException exp) {
             System.err.println("Port " + port + " already in use, tying next ...");
-            // exp.printStackTrace();
             // next try ....
         }
         return false;
@@ -239,7 +239,7 @@ public class WaitUtilTest {
         }
 
         @Override
-        public void cleanup() {}
+       public void cleanup() {}
 
     }
 }

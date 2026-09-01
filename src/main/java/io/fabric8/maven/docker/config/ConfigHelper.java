@@ -24,7 +24,7 @@ import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.Logger;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.project.MavenProject;
-import org.apache.maven.shared.utils.StringUtils;
+import org.codehaus.plexus.util.StringUtils;
 
 /**
  * Utility class which helps in resolving, customizing, initializing and validating
@@ -170,6 +170,33 @@ public class ConfigHelper {
             if (config.getName() == null) {
                 throw new IllegalArgumentException("Configuration error: <image> must have a non-null <name>");
             }
+        }
+    }
+
+    public static String getNetwork(ImageConfiguration imageConfig) {
+        String network = imageConfig.getBuildConfiguration().getNetwork();
+        if (network == null) {
+            network = System.getProperty("docker.network.mode");
+        }
+        if (network == null) {
+            network = System.getProperty("docker.build.network");
+        }
+        if(network!=null && network.isEmpty()) {
+           network = null;
+        }
+        return network;
+    }
+
+    public static boolean isNoCache(ImageConfiguration imageConfig) {
+        String noCache = System.getProperty("docker.noCache");
+        if (noCache == null) {
+            noCache = System.getProperty("docker.nocache");
+        }
+        if (noCache != null) {
+            return noCache.length() == 0 || Boolean.valueOf(noCache);
+        } else {
+            BuildImageConfiguration buildConfig = imageConfig.getBuildConfiguration();
+            return buildConfig.noCache();
         }
     }
 

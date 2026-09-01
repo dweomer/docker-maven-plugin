@@ -1,0 +1,38 @@
+name: Sonar Scanner
+
+env:
+  MAVEN_ARGS: -B -C -V -ntp -Dhttp.keepAlive=false -e
+
+on:
+  push:
+    branches:
+      - master
+
+concurrency:
+  # Only run once for latest commit per ref and cancel other (previous) runs.
+  group: ci-sonar-docker-maven-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: Sonar Scanner
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Shallow clones should be disabled for a better relevancy of analysis
+          fetch-depth: 0
+      - name: Setup Java 21 # SonarQube Cloud requires Java 21+ to run the analysis
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - name: Maven Sonar
+        run: ./mvnw ${MAVEN_ARGS} -Pjacoco,sonar clean install

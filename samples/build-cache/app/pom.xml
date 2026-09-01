@@ -1,18 +1,17 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>io.fabric8.dmp.samples.build-cache</groupId>
     <artifactId>parent</artifactId>
-    <version>0.35-SNAPSHOT</version>
+    <version>0.50-SNAPSHOT</version>
   </parent>
 
   <artifactId>app</artifactId>
 
   <properties>
     <!-- Avoid docker build cache invalidation due to new commits -->
-    <project.build.outputTimestamp>1970-01-01T00:00:00Z</project.build.outputTimestamp>
+    <project.build.outputTimestamp>2000-01-01T00:00:00Z</project.build.outputTimestamp>
   </properties>
 
   <dependencies>

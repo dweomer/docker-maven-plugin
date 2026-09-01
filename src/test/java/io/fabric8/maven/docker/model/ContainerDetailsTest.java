@@ -1,31 +1,27 @@
 package io.fabric8.maven.docker.model;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-
-public class ContainerDetailsTest {
+class ContainerDetailsTest {
 
     private Container container;
 
     private JsonObject json;
 
-    @Before
-    public void setup() {
+    @BeforeEach
+    void setup() {
         json = new JsonObject();
     }
 
     @Test
-    public void testCustomNetworkIpAddresses() {
+    void testCustomNetworkIpAddresses() {
         givenNetworkSettings("custom1","1.2.3.4","custom2","5.6.7.8");
 
         whenCreateContainer();
@@ -35,7 +31,7 @@ public class ContainerDetailsTest {
     }
 
     @Test
-    public void testEmptyNetworkSettings() {
+    void testEmptyNetworkSettings() {
         givenNetworkSettings();
 
 
@@ -45,18 +41,18 @@ public class ContainerDetailsTest {
     }
 
     private void thenMappingIsNull() {
-        assertNull(container.getCustomNetworkIpAddresses());
+        Assertions.assertNull(container.getCustomNetworkIpAddresses());
     }
 
     private void thenMappingMatches(String ... args) {
         Map<String,String> addresses = container.getCustomNetworkIpAddresses();
         for (int i = 0; i < args.length; i+=2) {
-            assertEquals(args[i+1],addresses.get(args[i]));
+            Assertions.assertEquals(args[i+1],addresses.get(args[i]));
         }
     }
 
     private void thenMappingSize(int size) {
-        assertEquals(container.getCustomNetworkIpAddresses().size(), size);
+        Assertions.assertEquals(container.getCustomNetworkIpAddresses().size(), size);
     }
 
     private void givenNetworkSettings(String ... args) {
@@ -72,7 +68,7 @@ public class ContainerDetailsTest {
     }
 
     @Test
-    public void testContainerWithMappedPorts() {
+    void testContainerWithMappedPorts() {
         givenAContainerWithMappedPorts();
 
         whenCreateContainer();
@@ -84,7 +80,7 @@ public class ContainerDetailsTest {
     }
 
     @Test
-    public void testContainerWithPorts() {
+    void testContainerWithPorts() {
         givenAContainerWithPorts();
         whenCreateContainer();
 
@@ -95,14 +91,14 @@ public class ContainerDetailsTest {
     }
 
     @Test
-    public void testContainerWithoutPorts() {
+    void testContainerWithoutPorts() {
         givenAContainerWithoutPorts();
         whenCreateContainer();
         thenPortBindingSizeIs(0);
     }
 
     @Test
-    public void testContainerWithLabels() {
+    void testContainerWithLabels() {
         givenAContainerWithLabels();
         whenCreateContainer();
         thenLabelsSizeIs(2);
@@ -111,8 +107,8 @@ public class ContainerDetailsTest {
     }
 
     private void thenLabelsContains(String key, String value) {
-        assertTrue(container.getLabels().containsKey(key));
-        assertEquals(value, container.getLabels().get(key));
+        Assertions.assertTrue(container.getLabels().containsKey(key));
+        Assertions.assertEquals(value, container.getLabels().get(key));
     }
 
     private void givenAContainerWithLabels() {
@@ -127,17 +123,17 @@ public class ContainerDetailsTest {
     }
 
     @Test
-    public void testCreateContainer() throws Exception {
+    void testCreateContainer()  {
         givenContainerData();
         whenCreateContainer();
         thenValidateContainer();
     }
 
-    @Test(expected = PortBindingException.class)
-    public void testCreateContainerWithEmptyPortBindings() throws Exception {
+    @Test
+    void testCreateContainerWithEmptyPortBindings()  {
         givenAContainerWithUnboundPorts();
         whenCreateContainer();
-        container.getPortBindings();
+       Assertions.assertThrows(PortBindingException.class, () -> container.getPortBindings());
     }
 
     private JsonArray createHostIpAndPort(int port, String ip) {
@@ -206,37 +202,118 @@ public class ContainerDetailsTest {
     }
 
     private void thenMapContainsPortSpecOnly(String key) {
-        assertTrue(container.getPortBindings().containsKey(key));
-        assertNull(container.getPortBindings().get(key));
+        Assertions.assertTrue(container.getPortBindings().containsKey(key));
+        Assertions.assertNull(container.getPortBindings().get(key));
     }
 
     private void thenMapContainsSpecAndBinding(String key, int port, String ip) {
-        assertTrue(container.getPortBindings().containsKey(key));
-        assertNotNull(container.getPortBindings().get(key));
+        Assertions.assertTrue(container.getPortBindings().containsKey(key));
+        Assertions.assertNotNull(container.getPortBindings().get(key));
 
-        assertEquals(ip, container.getPortBindings().get(key).getHostIp());
-        assertEquals(port, container.getPortBindings().get(key).getHostPort().intValue());
+        Assertions.assertEquals(ip, container.getPortBindings().get(key).getHostIp());
+        Assertions.assertEquals(port, container.getPortBindings().get(key).getHostPort().intValue());
     }
 
     private void thenLabelsSizeIs(int size) {
-        assertEquals(size, container.getLabels().size());
+        Assertions.assertEquals(size, container.getLabels().size());
     }
 
     private void thenPortBindingSizeIs(int size) {
-        assertEquals(size, container.getPortBindings().size());
+        Assertions.assertEquals(size, container.getPortBindings().size());
     }
 
     private void thenValidateContainer() {
-        assertEquals(1420559251485L, container.getCreated());
-        assertEquals("1234AF1234AF", container.getId());
-        assertEquals("milkman-kindness", container.getName());
-        assertEquals("9876CE", container.getImage());
-        assertTrue(container.isRunning());
-        assertTrue(container.getPortBindings().isEmpty());
+        Assertions.assertEquals(1420559251485L, container.getCreated());
+        Assertions.assertEquals("1234AF1234AF", container.getId());
+        Assertions.assertEquals("milkman-kindness", container.getName());
+        Assertions.assertEquals("9876CE", container.getImage());
+        Assertions.assertTrue(container.isRunning());
+        Assertions.assertTrue(container.getPortBindings().isEmpty());
     }
 
     private void whenCreateContainer() {
         container = new ContainerDetails(json);
+    }
+
+    @Test
+    void testGetIPAddressLegacyFormat() {
+        // Legacy format: IPAddress directly under NetworkSettings (Docker < 29, API < 1.44)
+        JsonObject networkSettings = new JsonObject();
+        networkSettings.addProperty("IPAddress", "172.17.0.2");
+        json.add("NetworkSettings", networkSettings);
+        
+        whenCreateContainer();
+        
+        Assertions.assertEquals("172.17.0.2", container.getIPAddress());
+    }
+
+    @Test
+    void testGetIPAddressNewFormat() {
+        // New format: IPAddress under Networks (Docker 29+, API 1.44+)
+        JsonObject networkSettings = new JsonObject();
+        JsonObject networks = new JsonObject();
+        JsonObject bridgeNetwork = new JsonObject();
+        bridgeNetwork.addProperty("IPAddress", "172.17.0.3");
+        networks.add("bridge", bridgeNetwork);
+        networkSettings.add("Networks", networks);
+        json.add("NetworkSettings", networkSettings);
+        
+        whenCreateContainer();
+        
+        Assertions.assertEquals("172.17.0.3", container.getIPAddress());
+    }
+
+    @Test
+    void testGetIPAddressNewFormatMultipleNetworks() {
+        // New format with multiple networks - should return first available IP
+        JsonObject networkSettings = new JsonObject();
+        JsonObject networks = new JsonObject();
+        
+        JsonObject customNetwork = new JsonObject();
+        customNetwork.addProperty("IPAddress", "192.168.1.10");
+        networks.add("custom", customNetwork);
+        
+        JsonObject bridgeNetwork = new JsonObject();
+        bridgeNetwork.addProperty("IPAddress", "172.17.0.4");
+        networks.add("bridge", bridgeNetwork);
+        
+        networkSettings.add("Networks", networks);
+        json.add("NetworkSettings", networkSettings);
+        
+        whenCreateContainer();
+        
+        // Should return one of the IP addresses (order depends on key iteration)
+        String ip = container.getIPAddress();
+        Assertions.assertTrue("192.168.1.10".equals(ip) || "172.17.0.4".equals(ip));
+    }
+
+    @Test
+    void testGetIPAddressNoNetwork() {
+        // Test case with no IP address available
+        JsonObject networkSettings = new JsonObject();
+        json.add("NetworkSettings", networkSettings);
+
+        whenCreateContainer();
+
+        Assertions.assertNull(container.getIPAddress());
+    }
+
+    @Test
+    void testGetIPAddressNewFormatWithoutIp() {
+        // New format where the Networks entries carry no usable IPAddress: the loop completes
+        // without returning and getIPAddress() falls through to null.
+        JsonObject networkSettings = new JsonObject();
+        JsonObject networks = new JsonObject();
+        networks.add("bridge", new JsonObject());        // network without an IPAddress property
+        JsonObject custom = new JsonObject();
+        custom.add("IPAddress", JsonNull.INSTANCE);      // network with an explicit null IPAddress
+        networks.add("custom", custom);
+        networkSettings.add("Networks", networks);
+        json.add("NetworkSettings", networkSettings);
+
+        whenCreateContainer();
+
+        Assertions.assertNull(container.getIPAddress());
     }
 
 

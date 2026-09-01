@@ -1,6 +1,188 @@
-# ChangeLog
+* **0.50-SNAPSHOT**:
+  - Create the parent directory of `outputFile` and fail with an explicit message when it cannot be written, instead of swallowing the error and failing later with a `NullPointerException`; also make the progress bar usable without a preceding `progressStart()`
+  - Do not fail `docker:stop` when the daemon is already removing the container itself, as it does for `<autoRemove>`; a conflict for any other reason (e.g. the container is still running) is still reported
 
-* **0.35-SNAPSHOT**:
+* **0.49.0 (2026-08-09)**:
+  - Fix `docker.save.aliases`: a non-existent alias in the list was silently ignored instead of failing the save with a clear error
+  - Make container log streaming (`<wait><log>` and log following) resilient to transient stream disconnects by reconnecting and resuming instead of aborting, fixing flaky log-wait timeouts (e.g. `jnr ... Bad file descriptor` on macOS CI)
+  - Honour the `<follow>` configuration element (in addition to the `docker.follow` system property) for `docker:start`, `docker:run` and `docker:watch` ([#1797](https://github.com/fabric8io/docker-maven-plugin/issues/1797))
+  - Add opt-in `<buildAllPlatforms>` buildx option to build all platforms during docker:build, warming the builder cache so a later docker:push reuses it ([#1866](https://github.com/fabric8io/docker-maven-plugin/issues/1866))
+  - Normalize empty `<args>` build argument values (e.g. from a property that resolves to an empty value) to an empty string instead of failing the build ([#1858](https://github.com/fabric8io/docker-maven-plugin/issues/1858))
+  - Fall back to the current timestamp instead of crashing the log-follow thread when a container log line has an unparseable timestamp (e.g. `Error` written on stderr) ([#1428](https://github.com/fabric8io/docker-maven-plugin/issues/1428))
+  - Pass externally-resolved build args (`docker.buildArg.*` system/Maven properties and other `BuildArgResolver` sources) to buildx `build` and `push`, so buildx honours them like the classic build path instead of only `<build><args>` ([#1901](https://github.com/fabric8io/docker-maven-plugin/issues/1901))
+  - Add a `wslc://` Docker transport so images can be built against a WSL Containers daemon, which exposes no Windows named pipe or TCP port and is reachable only via a stdio bridge, including auto-detection below the Docker/Podman named pipe ([#1928](https://github.com/fabric8io/docker-maven-plugin/issues/1928))
+  - Add support for the `--target` parameter in the build phase, for both classic and buildx builds ([#1908](https://github.com/fabric8io/docker-maven-plugin/pull/1908))
+  - Add `docker.ecr.endpoint` system property so ECR authentication can be pointed at a VPC endpoint instead of the default `api.ecr.<region>.amazonaws.com` host ([#1872](https://github.com/fabric8io/docker-maven-plugin/issues/1872))
+  - Keep the default value for a repeated build argument in multistage builds ([#1910](https://github.com/fabric8io/docker-maven-plugin/pull/1910))
+  - Only apply a Docker Compose wait config to a service when its alias matches the image configuration alias ([#1902](https://github.com/fabric8io/docker-maven-plugin/pull/1902))
+  - Avoid container name conflicts after an image is rebuilt ([#1958](https://github.com/fabric8io/docker-maven-plugin/pull/1958))
+  - Harden ECR authentication: validate the decoded credential split instead of throwing `ArrayIndexOutOfBoundsException` on input without a colon, and replace the shared `SimpleDateFormat` with a thread-safe `DateTimeFormatter`
+  - Use an ephemeral random password for the in-memory Docker TLS `KeyStore` instead of a hard-coded one
+  - Various Sonar-flagged reliability fixes in the socket, log-streaming and file-handling paths, including closing sockets and readers via try-with-resources and re-interrupting the current thread when catching `InterruptedException`
+  - Bump Jnr JFFI to v1.3.15
+
+* **0.48.1 (2026-02-07)**:
+  - Use wait config if no Docker Compose healthcheck ([1771](https://github.com/fabric8io/docker-maven-plugin/issues/1771))
+
+* **0.48.0 (2025-11-17)**:
+  - Allow saving multiple images in docker:save using new parameters saveNames and saveAliases.
+  - Fixed compatibility with Docker 29+ which requires minimum API version 1.44
+  - Fixed IP address parsing to support both legacy and new Docker API schema formats ([#1887](https://github.com/fabric8io/docker-maven-plugin/issues/1887))
+
+* **0.47.0 (2025-11-01)**:
+  - Support for user namespace mode ([1881](https://github.com/fabric8io/docker-maven-plugin/pull/1881))
+  - Bump Jib Core to v0.27.3 ([1879](https://github.com/fabric8io/docker-maven-plugin/pull/1879))
+  - Bump Jnr UnixSocket to v0.38.23 ([1880](https://github.com/fabric8io/docker-maven-plugin/pull/1880))
+  - Drop Plexus DI, switch to plexus-utils, update m-assembly-p and deps, verified with Maven 4 ([1851](https://github.com/fabric8io/docker-maven-plugin/pull/1851))
+  - `dmp:tag` should skip `<image>s` with no `<build>` ([1871](https://github.com/fabric8io/docker-maven-plugin/pull/1871))
+  - buildArchiveOnly with a path still builds the image ([1863](https://github.com/fabric8io/docker-maven-plugin/issues/1863))
+  - Add skip tag to the image level by `<skipTag>` ([1787](https://github.com/fabric8io/docker-maven-plugin/pull/1787))
+
+* **0.46.0 (2025-04-06)**:
+  - Docker-compose healthcheck configuration support ([1825](https://github.com/fabric8io/docker-maven-plugin/pull/1825))
+  - Docker container wait timeout default value made configurable using startContainerWaitTimeout configuration option ([1825](https://github.com/fabric8io/docker-maven-plugin/pull/1825))
+  - Respect `network` configuration in POM and with property `docker.build.network` or system property `docker.network.mode` in docker buildx [1850](https://github.com/fabric8io/docker-maven-plugin/pull/1850))
+  - Fix case sensitivity issue in builder name lookup by converting builderName to lowercase, ensuring compatibility across file systems ([1847](https://github.com/fabric8io/docker-maven-plugin/pull/1847))
+
+* **0.45.1 (2024-09-29)**:
+  - Make copy docker-buildx binary to temporary config directory work on windows too ([1819](https://github.com/fabric8io/docker-maven-plugin/pull/1819))
+  - Pull FROM images in relative path Dockerfiles ([1823](https://github.com/fabric8io/docker-maven-plugin/issues/1823))
+
+* **0.45.0 (2024-07-27)**:
+  - Automatically create parent directories of portPropertyFile path ([1761](https://github.com/fabric8io/docker-maven-plugin/pull/1761))
+  - Use complete image id in DockerAccessWithHcClient while fetching image id ([1764](https://github.com/fabric8io/docker-maven-plugin/pull/1764))
+  - Add skip tag to the image level by `<skipTag>` ([1787](https://github.com/fabric8io/docker-maven-plugin/pull/1787))
+  - Remove usage of `AnsiConsole` ([1791](https://github.com/fabric8io/docker-maven-plugin/pull/1791))
+  - Gracefully handle 404 when removing container ([1793](https://github.com/fabric8io/docker-maven-plugin/pull/1793))
+  - Added support for `platform` attribute of a container in the docker-compose configuration.
+  - Image Build Config BuildArgs should be passed while pulling images ([1756](https://github.com/fabric8io/docker-maven-plugin/issues/1756))
+  - `docker:push` failed with build `ARG` in `FROM` ([1778](https://github.com/fabric8io/docker-maven-plugin/issues/1778))
+  - Add the possibility to give secret to buildx build ([1798](https://github.com/fabric8io/docker-maven-plugin/issues/1798)
+  - `FROM` can reference `ARG` that references other `ARG` ([1800](https://github.com/fabric8io/docker-maven-plugin/issues/1800))
+  
+* **0.44.0** (2024-02-17):
+  - Add new option "useDefaultExclusion" for build configuration to handle exclusion of hidden files ([1708](https://github.com/fabric8io/docker-maven-plugin/issues/1708))
+  - The <noCache> option is now propagated down to the buildx command, if it is set in the <build> section. ([1717](https://github.com/fabric8io/docker-maven-plugin/pull/1717))
+  - Fix Buildx build with Dockerfile outside of the Docker build context directory ([1721](https://github.com/fabric8io/docker-maven-plugin/pull/1721))
+  - Add support setting driverOpts for buildx ([1704](https://github.com/fabric8io/docker-maven-plugin/pull/1704))
+  - Multi-Architecture push is not sending pull registry auth credentials ([1709](https://github.com/fabric8io/docker-maven-plugin/issues/1709))
+  - Adding support for `--cacheFrom` and `--cacheTo` buildX arguments ([1621](https://github.com/fabric8io/docker-maven-plugin/issues/1621))
+  - Add support for using maven/system properties for an ARG used as the FROM image in a dockerfile ([1731](https://github.com/fabric8io/docker-maven-plugin/pull/1731))
+  - Revert workaround for checking docker version for checking whether to add `docker --config` flag or not. ([1754](https://github.com/fabric8io/docker-maven-plugin/pull/1754)) 
+  - Add a workaround to copy docker-buildx binary to temporary config directory created for docker buildx build. This seems to make docker recognize buildx even after config override.  ([1754](https://github.com/fabric8io/docker-maven-plugin/pull/1754))
+  - Fix Windows volume bindings for Rancher, Podman and Windows-based containers ([1719](https://github.com/fabric8io/docker-maven-plugin/issues/1719))
+  - Extract the Docker Compose v2.1+ `depends_on` conditions and apply them as Docker Maven Plugin waiting configurations ([888](https://github.com/fabric8io/docker-maven-plugin/issues/888))
+  - Update `org.apache.maven:maven-core` to `3.8.1` ([1702](https://github.com/fabric8io/docker-maven-plugin/pull/1702))
+
+* **0.43.4** (2023-08-18):
+  - Always pass `--config` option for latest versions of Docker CLI ([1701](https://github.com/fabric8io/docker-maven-plugin/issues/1701))
+
+* **0.43.3** (2023-08-13):
+  - Only add `--config` to buildx command string when authentication credentials are coming from outside sources
+  - Remove hardcoded `--node` value while creating buildx builder
+
+* **0.43.2** (2023-07-29):
+  - Make `--config` from buildx command string generation optional ([1673](https://github.com/fabric8io/docker-maven-plugin/pull/1673)) @robfrank
+
+* **0.43.1** (2023-07-28):
+  - Resolve registry auth URL by registry ID ([1688](https://github.com/fabric8io/docker-maven-plugin/issues/1688)) @wajda
+  - Allow 'host-gateway' as non-resolvable hostname in extraHosts ([1527](https://github.com/fabric8io/docker-maven-plugin/issues/1527)) @azaaiman
+  - Bump guava from `31.1-jre` to `32.0.1-jre` ([1686](https://github.com/fabric8io/docker-maven-plugin/pull/1686)) @dependabot
+  - Bump jib-core from `0.23.0` to `0.24.0` ([1686](https://github.com/fabric8io/docker-maven-plugin/pull/1686)) @rohanKanojia
+  - Fix unauthorized error with buildx needing multiple credentials ([1583](https://github.com/fabric8io/docker-maven-plugin/issues/1583)) @eocantu
+  - Add logger to HTTP ping checker ([1689](https://github.com/fabric8io/docker-maven-plugin/pull/1689)) @ryanrishi
+
+* **0.43.0** (2023-05-20):
+  - Make buildx build single non-native platform if requested ([1665](https://github.com/fabric8io/docker-maven-plugin/pull/1665)) @martyvona
+  - Support for buildx option to disable attestations ([1661](https://github.com/fabric8io/docker-maven-plugin/issues/1661)) @chonton
+
+* **0.42.1** (2023-04-06):
+  - Update Jnr Jffi dependency to v1.3.11 ([1660](https://github.com/fabric8io/docker-maven-plugin/issues/1660)) @rohanKanojia
+  - Update run platform documentation ([1652](https://github.com/fabric8io/docker-maven-plugin/pull/1652)) @chonton
+  - buildx should split platforms by comma as documented ([1651](https://github.com/fabric8io/docker-maven-plugin/pull/1651)) @chonton
+
+* **0.42.0** (2023-02-28):
+  - Support `docker run --platform` ([1641](https://github.com/fabric8io/docker-maven-plugin/issues/1641)) @chonton
+  - Update buildx documentation to amplify the build behavior ([1646](https://github.com/fabric8io/docker-maven-plugin/pull/1646)) @chonton
+  - Default to native platform when creating container ([1645](https://github.com/fabric8io/docker-maven-plugin/pull/1645)) @chonton
+  - JIB ignores the `DOCKER_REGISTRY` environment variable ([1617](https://github.com/fabric8io/docker-maven-plugin/issues/1617)) @rohanKanojia
+
+* **0.41.0** (2023-02-06):
+  - multi-arch build should use provided repository ([1597](https://github.com/fabric8io/docker-maven-plugin/issues/1597)) @merikan
+  - new property docker.build.network to override the network for RUN directives for docker build ([1636](https://github.com/fabric8io/docker-maven-plugin/pull/1636)) @tulinkry
+  - Update Jib Core to v0.23.0 ([1637](https://github.com/fabric8io/docker-maven-plugin/pull/1637)) @rohanKanojia
+  - Update JNR UnixSocket to v0.38.19 ([1638](https://github.com/fabric8io/docker-maven-plugin/pull/1638))
+
+* **0.40.3** (2022-12-18):
+  - image/squash option is taken into account when using buildx ([1605](https://github.com/fabric8io/docker-maven-plugin/pull/1605)) @kevinleturc
+  - Allow having build args with same name but different value in various sources, which are overriden in the order of precedence in resulting build args map ([1407](https://github.com/fabric8io/docker-maven-plugin/issues/1407)) @pavelsmolensky
+  - Use double for `docker.cpus` property and interpret this value in the same way as Docker config option `--cpus` ([1609](https://github.com/fabric8io/docker-maven-plugin/pull/1609)) @vjuranek
+  - NPE from Assembly plugin when POM packaging is used ([1146](https://github.com/fabric8io/docker-maven-plugin/issues/1146)) @slawekjaranowski
+  - Docker pulling progress only shown after pull has completed and not in real-time ([1598](https://github.com/fabric8io/docker-maven-plugin/issues/1598)) @causalnet
+  - Bump `org.yaml:snakeyaml` to v1.32 ([1619](https://github.com/fabric8io/docker-maven-plugin/pull/1619)) @pen4
+  - Bump `com.google.cloud.tools:jib-core` to v0.23.0 ([1620](https://github.com/fabric8io/docker-maven-plugin/pull/1620)) @pen4
+  - Bump `com.google.guava:guava` to v31.1-jre @rohanKanojia
+
+* **0.40.2** (2022-07-31):
+  - Plugin doesn't abort building an image in case Podman is used and Dockerfile can't be processed ([1562](https://github.com/fabric8io/docker-maven-plugin/issues/1512)) @jh-cd 
+  - Bump gson from 2.8.5 to 2.8.9 ([1556](https://github.com/fabric8io/docker-maven-plugin/pull/1556)) @dependabot
+  - Build and load native platform during build goal, build and push all platforms during push goal ([1576](https://github.com/fabric8io/docker-maven-plugin/issues/1576)) @chonton
+  - Remove buildx cache, don't delete builder instances after goal. Use builder instance to cache artifacts ([1579](https://github.com/fabric8io/docker-maven-plugin/pull/1579)) @chonton
+  - Multiple assemblies use the name "maven". Please assign each assembly a unique name ([1558](https://github.com/fabric8io/docker-maven-plugin/issues/1558)) @tbfky
+  - Use `https://index.docker.io/v1/` as default buildx server registry ([1574](https://github.com/fabric8io/docker-maven-plugin/issues/1574)) @chonton
+  - When using buildx, do not force build of native platform  ([1572](https://github.com/fabric8io/docker-maven-plugin/issues/1572)) @chonton
+
+* **0.40.1** (2022-06-11):
+  - buildx does not work when specifying Dockerfile location ([1562](https://github.com/fabric8io/docker-maven-plugin/issues/1562)) @chonton
+  - Use buildx, set tag to current version fails if it contains `-SNAPSHOT` ([1566](https://github.com/fabric8io/docker-maven-plugin/issues/1566)) @chonton
+
+* **0.40.0** (2022-05-29):
+  - `docker:stop` should respect docker.skip even when `docker.executeStopOnVMShutdown` is set to `true` ([1561](https://github.com/fabric8io/docker-maven-plugin/pull/1561)) @doyleyoung
+  - Prevent concurrent access to secDispatcher during password decryption ([1533](https://github.com/fabric8io/docker-maven-plugin/pull/1533)) @joserebelo
+  - Support for `docker run --sysctl` parameters ([1530](https://github.com/fabric8io/docker-maven-plugin/issues/1530)) @jpraet
+  - Migrate to JUnit5 and Mockito for testing ([1550](https://github.com/fabric8io/docker-maven-plugin/pull/1550)) @chonton
+  - Multi-architecture images using buildx ([1502](https://github.com/fabric8io/docker-maven-plugin/issues/1502)) @chonton
+  - Add missing dash to buildx `--build-arg` ([1559](https://github.com/fabric8io/docker-maven-plugin/pull/1559)) @elektro-wolle
+
+* **0.39.1** (2022-02-27):
+  - determineFinalArgValue respect default value if key exists but value is null ([1528](https://github.com/fabric8io/docker-maven-plugin/issues/1528)) @twendelmuth
+
+* **0.39.0** (2022-02-06):
+  - `skipPom` is ignored by "push" goal ([1482](https://github.com/fabric8io/docker-maven-plugin/issues/1482)) @rohanKanojia
+  - Cleanup dangling images as a result of image tagging, auto-pulling a base image, or auto-pulling a cacheFrom image ([#1513](https://github.com/fabric8io/docker-maven-plugin/pull/1513)) @rkhmelichek
+  - Fix logic bug to remove dangling images in BuildService ([1522](https://github.com/fabric8io/docker-maven-plugin/pull/1522)) @rkhmelichek
+  - Enable Create Image (pull) HTTP API option ([#1516](https://github.com/fabric8io/docker-maven-plugin/issues/1516)) @rohanKanojia
+
+* **0.38.1** (2021-12-18):
+  - Update to jnr-unixsocket 0.38.14 to solve UnsatisfiedLinkError on Apple M1 ([#1257](https://github.com/fabric8io/docker-maven-plugin/pull/1507)) @henningn
+  - Revert "Only push the `latest` tag if no other tags where specified in jib mode. This can break your build, if you rely on the automatic `latest` tag." ([#1510](https://github.com/fabric8io/docker-maven-plugin/pull/1510)) @Postremus
+  - Revert "Only push the `latest` tag if no other tags where specified in docker mode. This can break your build, if you rely on the automatic `latest` tag." ([#1509](https://github.com/fabric8io/docker-maven-plugin/pull/1509)) @Postremus
+
+* **0.38.0** (2021-11-09):
+  - Allow replacement in tags. Added a new replacement `%T` which always adds a timestamp. ([#1491](https://github.com/fabric8io/docker-maven-plugin/pull/1491))
+  - Only push the `latest` tag if no other tags where specified in docker mode. This can break your build, if you rely on the automatic `latest` tag. ([#1496](https://github.com/fabric8io/docker-maven-plugin/pull/1496))
+  - Only push the `latest` tag if no other tags where specified in jib mode. This can break your build, if you rely on the automatic `latest` tag. ([#1498](https://github.com/fabric8io/docker-maven-plugin/pull/1498))
+  - Deprecate `entrypoint` parameter in `<run>` configuration ([1488](https://github.com/fabric8io/docker-maven-plugin/pull/1488))
+  - Add support for `executeStopOnVMShutdown` flag in `docker:stop` goal to stop containers after build completion ([1492](https://github.com/fabric8io/docker-maven-plugin/pull/1492))
+
+**Note:** `entrypoint` parameter in `<run>` configuration is marked as deprecated. Users are advised to use `entryPoint` parameter instead.
+
+* **0.37.0** (2021-08-15)
+  - Fix stop mojo by taking container name pattern into account (#1168)
+  - Wait for request.abort to finish before calling `is.close()` (#1103)
+
+* **0.36.1** (2021-06-27)
+  - Fix multi-stage builds when an image refers to another image named/aliased up in the Dockerfile ([1443](https://github.com/fabric8io/docker-maven-plugin/issues/1443))
+  - Revert part of #965 in LogRequestor ([1480](https://github.com/fabric8io/docker-maven-plugin/pull/1480))
+
+* **0.36.0** (2021-05-23)
+  - CI builds with Maven Wrapper to ensure that Maven Wrapper files and configuration are correct ([1450](https://github.com/fabric8io/docker-maven-plugin/issues/1450))
+  - Using <external> properties in image configuration disables Docker cache during build ([1455](https://github.com/fabric8io/docker-maven-plugin/issues/1455))
+  - Update documentation to clearly state that `docker.cacheFrom.idx` is a _list_ property and should always be used with a `idx` suffix. With this change, `docker.cacheFrom` (without _idx_) is not considered anymore.
+  - A placeholder in docker.image.tag isn't replaced by the final result when used during docker:build ([1468](https://github.com/fabric8io/docker-maven-plugin/issues/1468))
+  - Add a property(`outputFile`) to dump the output of Docker commands to file ([1472]https://github.com/fabric8io/docker-maven-plugin/pull/1472)
+  - Add pulling of `cacheFrom` images during build ([1457](https://github.com/fabric8io/docker-maven-plugin/issues/1457))
+  - Update Guava to 30.1-jre and Jib-Core to 0.18.0 ([1475](https://github.com/fabric8io/docker-maven-plugin/pull/1475))
 
 * **0.35.0** (2021-04-04)
   - Building 'spring-boot-with-jib' sample fails with NoSuchMethodError ([1384](https://github.com/fabric8io/docker-maven-plugin/issues/1384))

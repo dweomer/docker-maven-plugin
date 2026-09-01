@@ -45,7 +45,7 @@ import org.apache.maven.project.MavenProjectHelper;
  * @since 25/10/15
  */
 @Mojo(name = "source", defaultPhase = LifecyclePhase.PACKAGE)
-public class SourceMojo extends AbstractBuildSupportMojo {
+public class SourceMojo extends AbstractDockerMojo {
 
     @Component
     private MavenProjectHelper projectHelper;
@@ -78,7 +78,7 @@ public class SourceMojo extends AbstractBuildSupportMojo {
                 }
             }
         }
-        if (sourceMode == BuildImageSelectMode.first && imageConfigs.size() > 0) {
+        if (sourceMode == BuildImageSelectMode.first && !imageConfigs.isEmpty()) {
             ImageConfiguration imageConfig = imageConfigs.get(0);
             File dockerTar = hub.getArchiveService().createDockerBuildArchive(imageConfig, params);
             projectHelper.attachArtifact(project, getArchiveType(imageConfig),

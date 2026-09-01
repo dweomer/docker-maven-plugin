@@ -3,11 +3,15 @@ package io.fabric8.maven.docker.access;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import com.google.gson.JsonPrimitive;
+import io.fabric8.maven.docker.config.HealthCheckConfiguration;
+import io.fabric8.maven.docker.config.HealthCheckMode;
 import org.apache.commons.text.StrSubstitutor;
 
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
@@ -15,17 +19,24 @@ import java.util.Properties;
 import java.util.Set;
 
 import io.fabric8.maven.docker.config.Arguments;
-import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.JsonFactory;
+
+import static io.fabric8.maven.docker.access.util.ComposeDurationUtil.goDurationToNanoseconds;
 
 public class ContainerCreateConfig {
 
     private final JsonObject createConfig = new JsonObject();
     private final String imageName;
+    private final String platform;
+
+    public ContainerCreateConfig(String imageName, String platform) {
+        this.imageName = imageName;
+        this.platform = platform;
+        createConfig.addProperty("Image", imageName);
+    }
 
     public ContainerCreateConfig(String imageName) {
-        this.imageName = imageName;
-        createConfig.addProperty("Image", imageName);
+        this(imageName, null);
     }
 
     public ContainerCreateConfig binds(List<String> volumes) {
@@ -67,7 +78,7 @@ public class ContainerCreateConfig {
                 String value = entry.getValue();
                 if (value == null) {
                     value = "";
-                } else if(value.matches("^\\+\\$\\{.*}$")) {
+                } else if (value.matches("^\\+\\$\\{.*}$")) {
                     /*
                      * This case is to handle the Maven interpolation issue which used
                      * to occur when using ${..} only without any suffix.
@@ -88,7 +99,7 @@ public class ContainerCreateConfig {
         return this;
     }
 
-    public ContainerCreateConfig labels(Map<String,String> labels) {
+    public ContainerCreateConfig labels(Map<String, String> labels) {
         if (labels != null && labels.size() > 0) {
             createConfig.add("Labels", JsonFactory.newJsonObject(labels));
         }
@@ -106,8 +117,48 @@ public class ContainerCreateConfig {
         return this;
     }
 
+    public ContainerCreateConfig healthcheck(HealthCheckConfiguration healthCheckConfiguration) {
+        if (healthCheckConfiguration == null) {
+            return this;
+        }
+        JsonObject healthcheck = new JsonObject();
+        if (healthCheckConfiguration.getMode() == HealthCheckMode.none) {
+            healthcheck.add("Test", JsonFactory.newJsonArray(Collections.singletonList("NONE")));
+            createConfig.add("Healthcheck", healthcheck);
+            return this;
+        }
+
+        healthcheck.add("Test", JsonFactory.newJsonArray(healthCheckConfiguration.getCmd().asStrings()));
+
+        if (healthCheckConfiguration.getRetries() != null) {
+            healthcheck.add("Retries", new JsonPrimitive(healthCheckConfiguration.getRetries()));
+        }
+        if (healthCheckConfiguration.getInterval() != null) {
+            String intervalValue = healthCheckConfiguration.getInterval();
+            String field = "Interval";
+            healthcheck.add(field, new JsonPrimitive(goDurationToNanoseconds(intervalValue, field)));
+        }
+        if (healthCheckConfiguration.getStartPeriod() != null) {
+            String field = "StartPeriod";
+            String intervalValue = healthCheckConfiguration.getStartPeriod();
+            healthcheck.add(field, new JsonPrimitive(goDurationToNanoseconds(intervalValue, field)));
+        }
+        if (healthCheckConfiguration.getTimeout() != null) {
+            String field = "Timeout";
+            String intervalValue = healthCheckConfiguration.getTimeout();
+            healthcheck.add(field, new JsonPrimitive(goDurationToNanoseconds(intervalValue, field)));
+        }
+
+        createConfig.add("Healthcheck", healthcheck);
+        return this;
+    }
+
     public String getImageName() {
         return imageName;
+    }
+
+    public String getPlatform() {
+        return platform;
     }
 
     public ContainerCreateConfig hostname(String hostname) {
@@ -156,14 +207,14 @@ public class ContainerCreateConfig {
     }
 
     private String extractContainerPath(String volume) {
-        String path  = EnvUtil.fixupPath(volume);
-        if (path.contains(":")) {
-            String[] parts = path.split(":");
+        if (volume.contains(":")) {
+            // only split when : is not followed by \ (Windows)
+            String[] parts = volume.split(":(?!\\\\)");
             if (parts.length > 1) {
                 return parts[1];
             }
         }
-        return path;
+        return volume;
     }
 
     private void addEnvironment(Properties envProps) {
@@ -182,8 +233,7 @@ public class ContainerCreateConfig {
 
     private void addPropertiesFromFile(String envPropsFile, Properties envProps) {
         // External properties override internally specified properties
-        try {
-            FileReader reader = new FileReader(envPropsFile);
+        try (FileReader reader = new FileReader(envPropsFile)) {
             envProps.load(reader);
         } catch (FileNotFoundException e) {
             throw new IllegalArgumentException(String.format("Cannot find environment property file '%s'", envPropsFile));

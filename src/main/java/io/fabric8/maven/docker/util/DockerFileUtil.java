@@ -45,7 +45,7 @@ import static io.fabric8.maven.docker.util.EnvUtil.getUserHome;
  */
 public class DockerFileUtil {
 
-    private static final String ARG_PATTERN_REGEX = "\\$(?:\\{(.*)\\}|(.*))";
+    private static final String ARG_PATTERN_REGEX = "\\$([\\w|\\-|\\.]+)|\\$\\{([\\w|\\-|\\.]+)\\}";
 
     private DockerFileUtil() {}
 
@@ -64,17 +64,29 @@ public class DockerFileUtil {
         Set<String> fromAlias = new HashSet<>();
         for (String[] fromLine :  fromLines) {
             if (fromLine.length > 1) {
-                if (fromLine.length == 2) { // FROM image:tag use case
-                    result.add(resolveImageTagFromArgs(fromLine[1], args));
-                } else if (fromLine.length == 4) { // FROM image:tag AS alias use case
-                    if (!fromAlias.contains(fromLine[1])) {
-                        result.add(resolveImageTagFromArgs(fromLine[1], args));
-                    }
+                String from = extractValidFromLine(fromLine);
+                if (!fromAlias.contains(from)) {
+                    // Image is NOT referring to an already declared alias
+                    result.add(resolveImageTagFromArgs(from, args));
+                }
+                if (fromLine.length == 4) { // FROM image:tag AS alias use case
+                    // Image alias is declared - track it
                     fromAlias.add(resolveImageTagFromArgs(fromLine[3], args));
                 }
             }
         }
         return new ArrayList<>(result);
+    }
+
+    private static String extractValidFromLine(String[] fromLine) {
+        String validFrom = fromLine[1];
+        for (int i = 1; i < fromLine.length; i++) {
+            if (!fromLine[i].startsWith("--")) {
+                validFrom = fromLine[i];
+                break;
+            }
+        }
+        return validFrom;
     }
 
     /**
@@ -169,35 +181,32 @@ public class DockerFileUtil {
         return result;
     }
 
-    static String resolveArgValueFromStrContainingArgKey(String argString, Map<String, String> args) {
-        Pattern argPattern = Pattern.compile(ARG_PATTERN_REGEX);
-        Matcher matcher = argPattern.matcher(argString);
-        if (matcher.matches()) {
-            if (matcher.group(1) != null) {
-                return args.get(matcher.group(1));
-            } else if (matcher.group(2) != null) {
-                return args.get(matcher.group(2));
+    static String resolveImageTagFromArgs(String imageTagString, Map<String, String> args) {
+        String resolvedImageString = imageTagString;
+        Set<String> foundArgs = findAllArgs(imageTagString);
+        for (String foundArg : foundArgs) {
+            // check if the arg referenced in imageTagString exists in the Dockerfile
+            if (args.containsKey(foundArg)) {
+                // resolve args that are referenced by this arg
+                String arg = resolveImageTagFromArgs(args.get(foundArg), args);
+                // replace the arg by its value
+                resolvedImageString = resolvedImageString.replaceFirst(String.format("\\$\\{*%s\\}*", foundArg), arg);
             }
         }
-        return null;
+        return resolvedImageString;
     }
 
-    private static String resolveImageTagFromArgs(String imageTagString, Map<String, String> args) {
-        if (imageTagString.startsWith("$")) { // FROM $IMAGE
-            String resolvedVal = resolveArgValueFromStrContainingArgKey(imageTagString, args);
-            if (resolvedVal != null) {
-                return resolvedVal;
-            }
-        } else { // FROM image:$TAG_ARG
-            String[] imageTagArr = imageTagString.split(":");
-            if (imageTagArr.length > 1) {
-                String tag = resolveArgValueFromStrContainingArgKey(imageTagArr[1], args);
-                if (tag != null) {
-                    return imageTagArr[0] + ":" + tag;
-                }
+    static Set<String> findAllArgs(String imageTagString) {
+        Matcher m = Pattern.compile(ARG_PATTERN_REGEX).matcher(imageTagString);
+        Set<String> args = new HashSet<>();
+        while(m.find()){
+            if(m.group(1)!=null){
+                args.add(m.group(1));
+            }else if(m.group(2)!=null){
+                args.add(m.group(2));
             }
         }
-        return imageTagString;
+        return args;
     }
 
     private static Reader getFileReaderFromDir(File file) {
@@ -214,7 +223,7 @@ public class DockerFileUtil {
     }
 
     public static JsonObject readDockerConfig() {
-        String dockerConfig = System.getenv("DOCKER_CONFIG");
+        String dockerConfig = EnvUtil.getEnv("DOCKER_CONFIG");
 
         Reader reader = dockerConfig == null
                 ? getFileReaderFromDir(new File(getHomeDir(),".docker/config.json"))
@@ -257,24 +266,41 @@ public class DockerFileUtil {
     private static void updateMapWithArgValue(Map<String, String> result, Map<String, String> args, String argString) {
         if (argString.contains("=") || argString.contains(":")) {
             String[] argStringParts = argString.split("[=:]");
-            String argStringValue = argString.substring(argStringParts[0].length() + 1);
+            String argStringKey = argStringParts[0];
+            String argStringValue = determineFinalArgValue(argString, argStringParts, args);
             if (argStringValue.startsWith("\"") || argStringValue.startsWith("'")) {
-                // Replaces surrounding quotes
-                argStringValue = argStringValue.replaceAll("^\"|\"|'|'$", "");
+                // Strip any single or double quote characters (the anchored ^ and $ alternatives in the
+                // previous "^\"|\"|'|'$" were redundant since the bare " and ' already match anywhere).
+                argStringValue = argStringValue.replaceAll("[\"']", "");
             } else {
                 validateArgValue(argStringValue);
             }
-            result.put(argStringParts[0], argStringValue);
+            result.put(argStringKey, argStringValue);
         } else {
             validateArgValue(argString);
-            result.putAll(fetchArgsFromBuildConfiguration(argString, args));
+            Map<String, String> argFromBuildConfig = fetchArgsFromBuildConfiguration(argString, args);
+            if (argFromBuildConfig.isEmpty()) {
+                // Keep earlier/default values for repeated ARG declarations with no value.
+                // If no value is known yet, represent it as empty string.
+                result.putIfAbsent(argString, "");
+            } else {
+                result.putAll(argFromBuildConfig);
+            }
         }
+    }
+
+    private static String determineFinalArgValue(String argString, String[] argStringParts, Map<String, String> args) {
+        String argStringValue = argString.substring(argStringParts[0].length() + 1);
+        if(args == null || args.get(argStringParts[0]) == null){
+            return argStringValue;
+        }
+        return args.getOrDefault(argStringParts[0], argStringValue);
     }
 
     private static Map<String, String> fetchArgsFromBuildConfiguration(String argString, Map<String, String> args) {
         Map<String, String> argFromBuildConfig = new HashMap<>();
-        if (args != null) {
-            argFromBuildConfig.put(argString, args.getOrDefault(argString, ""));
+        if (args != null && args.containsKey(argString) && args.get(argString) != null) {
+            argFromBuildConfig.put(argString, args.get(argString));
         }
         return argFromBuildConfig;
     }

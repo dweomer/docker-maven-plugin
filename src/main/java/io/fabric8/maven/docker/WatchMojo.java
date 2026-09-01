@@ -41,7 +41,7 @@ import org.apache.maven.plugins.annotations.Parameter;
  * @since 16/06/15
  */
 @Mojo(name = "watch")
-public class WatchMojo extends AbstractBuildSupportMojo {
+public class WatchMojo extends AbstractDockerMojo {
 
     /**
      * Watching mode for rebuilding images
@@ -60,6 +60,10 @@ public class WatchMojo extends AbstractBuildSupportMojo {
 
     @Parameter(property = "docker.watchPostExec")
     private String watchPostExec;
+
+    // Whether to follow (stream) the container logs until interrupted. Also settable via docker.follow.
+    @Parameter(property = "docker.follow", defaultValue = "false")
+    private boolean follow;
 
     /**
      * Naming pattern for how to name containers when started
@@ -97,7 +101,7 @@ public class WatchMojo extends AbstractBuildSupportMojo {
                 .buildTimestamp(getBuildTimestamp())
                 .pomLabel(getGavLabel())
                 .mojoParameters(createMojoParameters())
-                .follow(follow())
+                .follow(follow)
                 .showLogs(showLogs())
                 .serviceHubFactory(serviceHubFactory)
                 .hub(hub)
@@ -107,9 +111,5 @@ public class WatchMojo extends AbstractBuildSupportMojo {
 
     private String showLogs() {
         return System.getProperty("docker.showLogs");
-    }
-
-    private boolean follow() {
-        return Boolean.valueOf(System.getProperty("docker.follow", "false"));
     }
 }

@@ -1,16 +1,15 @@
 package io.fabric8.maven.docker.model;
 
+import com.google.common.base.Joiner;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
-
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
 
 
 public class ContainerDetails implements Container {
@@ -61,7 +60,7 @@ public class ContainerDetails implements Container {
 
     @Override
     public String getImage() {
-        // ID: json.getString("Image");
+        // The top level "Image" holds the image id, Config.Image the image name
         return json.getAsJsonObject(CONFIG).get(IMAGE).getAsString();
     }
 
@@ -77,18 +76,31 @@ public class ContainerDetails implements Container {
     public String getName() {
         String name = json.get(NAME).getAsString();
 
-        if (name.startsWith(SLASH)) {
-            name = name.substring(1);
-        }
-        return name;
+        return name.startsWith(SLASH) ? name.substring(1) :
+          name;
     }
 
     @Override
     public String getIPAddress() {
         if (json.has(NETWORK_SETTINGS) && !json.get(NETWORK_SETTINGS).isJsonNull()) {
             JsonObject networkSettings = json.getAsJsonObject(NETWORK_SETTINGS);
-            if (!networkSettings.get(IP).isJsonNull()) {
+            
+            // Try legacy API format first (Docker < 29, API < 1.44)
+            if (networkSettings.has(IP) && !networkSettings.get(IP).isJsonNull()) {
                 return networkSettings.get(IP).getAsString();
+            }
+            
+            // Fall back to new API format (Docker 29+, API 1.44+)
+            // IPAddress is now located in Networks object
+            if (networkSettings.has(NETWORKS) && !networkSettings.get(NETWORKS).isJsonNull()) {
+                JsonObject networks = networkSettings.getAsJsonObject(NETWORKS);
+                // Get IP from the first available network
+                for (String networkName : networks.keySet()) {
+                    JsonObject network = networks.getAsJsonObject(networkName);
+                    if (network.has(IP) && !network.get(IP).isJsonNull()) {
+                        return network.get(IP).getAsString();
+                    }
+                }
             }
         }
         return null;

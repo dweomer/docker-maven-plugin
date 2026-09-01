@@ -1,0 +1,234 @@
+package io.fabric8.maven.docker.config;
+
+import io.fabric8.maven.docker.util.EnvUtil;
+import org.apache.maven.plugins.annotations.Parameter;
+
+import javax.annotation.Nonnull;
+import java.io.Serializable;
+import java.util.List;
+import java.util.Map;
+
+public class BuildXConfiguration implements Serializable {
+
+    /**
+     * Builder instance name
+     */
+    @Parameter
+    private String builderName;
+
+    /**
+     * Configuration file to create builder
+     */
+    @Parameter
+    private String configFile;
+
+    /**
+     * Location of docker state, including builder configurations
+     */
+    @Parameter
+    private String dockerStateDir;
+
+    /**
+     * List of platforms for multi-architecture build
+     */
+    @Parameter
+    private List<String> platforms;
+
+    /**
+     * Attestation configuration
+     */
+    @Parameter
+    private AttestationConfiguration attestations;
+
+    @Parameter
+    private String nodeName;
+
+    /**
+     * Value to be passed to {@code --cache-from} option of BuildX build.
+     */
+    @Parameter
+    private String cacheFrom;
+
+    /**
+     * Value to be passed to {@code --cache-to} option of BuildX build.
+     */
+    @Parameter
+    private String cacheTo;
+
+    /**
+     * Map of driver options
+     */
+    @Parameter
+    private Map<String, String> driverOpts;
+
+    /**
+     * Secret to expose to the build
+     */
+    @Parameter
+    private SecretConfiguration secret;
+
+    /**
+     * Whether to build all configured {@link #platforms} already during the {@code docker:build}
+     * goal (populating the builder cache), instead of building only the native platform. Since
+     * multi-platform images cannot be loaded into the docker daemon, this extra build produces no
+     * output and only warms the build cache; the native platform is still built with {@code --load}
+     * so the image is available locally for integration tests. Defaults to {@code false}.
+     */
+    @Parameter
+    private Boolean buildAllPlatforms;
+
+    public String getBuilderName() {
+        return builderName;
+    }
+
+    public String getConfigFile() {
+        return configFile;
+    }
+
+    public String getDockerStateDir() {
+        return dockerStateDir;
+    }
+
+    public String getNodeName() {
+        return nodeName;
+    }
+
+    public String getCacheFrom() {
+        return cacheFrom;
+    }
+
+    public String getCacheTo() {
+        return cacheTo;
+    }
+
+    public boolean isBuildX() {
+        return !getPlatforms().isEmpty() || hasSecret();
+    }
+
+    @Nonnull
+    public List<String> getPlatforms() {
+        return EnvUtil.splitAtCommasAndTrim(platforms);
+    }
+
+    public AttestationConfiguration getAttestations() {
+        return attestations;
+    }
+
+    public Map<String, String> getDriverOpts() {
+        return driverOpts;
+    }
+
+    public boolean hasSecret() {
+        return secret != null;
+    }
+
+    public SecretConfiguration getSecret() {
+        return secret;
+    }
+
+    public Boolean getBuildAllPlatforms() {
+        return buildAllPlatforms;
+    }
+
+    public boolean isBuildAllPlatforms() {
+        return Boolean.TRUE.equals(buildAllPlatforms);
+    }
+
+    public static class Builder {
+
+        private final BuildXConfiguration config = new BuildXConfiguration();
+        private boolean isEmpty = true;
+
+        public BuildXConfiguration build() {
+            return isEmpty ? null : config;
+        }
+
+        public Builder builderName(String builderName) {
+            config.builderName = builderName;
+            if (builderName != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder nodeName(String nodeName) {
+            config.nodeName = nodeName;
+            if (nodeName != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder configFile(String configFile) {
+            config.configFile = configFile;
+            if (configFile != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder dockerStateDir(String dockerStateDir) {
+            config.dockerStateDir = dockerStateDir;
+            if (dockerStateDir != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder platforms(List<String> platforms) {
+            config.platforms = EnvUtil.removeEmptyEntries(platforms);
+            if (!config.platforms.isEmpty()) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder attestations(AttestationConfiguration attestations) {
+            config.attestations = attestations;
+            if (attestations != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder cacheFrom(String cacheFrom) {
+            config.cacheFrom = cacheFrom;
+            if (cacheFrom != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder driverOpts(Map<String, String> driverOpts) {
+            config.driverOpts = driverOpts;
+            if (driverOpts != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder cacheTo(String cacheTo) {
+            config.cacheTo = cacheTo;
+            if (cacheTo != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder secret(SecretConfiguration secret) {
+            config.secret = secret;
+            if (secret != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+
+        public Builder buildAllPlatforms(Boolean buildAllPlatforms) {
+            config.buildAllPlatforms = buildAllPlatforms;
+            if (buildAllPlatforms != null) {
+                isEmpty = false;
+            }
+            return this;
+        }
+    }
+}

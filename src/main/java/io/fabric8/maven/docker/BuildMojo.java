@@ -1,5 +1,21 @@
 package io.fabric8.maven.docker;
 
+import io.fabric8.maven.docker.access.DockerAccessException;
+import io.fabric8.maven.docker.config.BuildImageConfiguration;
+import io.fabric8.maven.docker.config.ImageConfiguration;
+import io.fabric8.maven.docker.service.BuildService;
+import io.fabric8.maven.docker.service.ImagePullManager;
+import io.fabric8.maven.docker.service.JibBuildService;
+import io.fabric8.maven.docker.service.ServiceHub;
+import io.fabric8.maven.docker.service.helper.BuildArgResolver;
+import io.fabric8.maven.docker.util.EnvUtil;
+import io.fabric8.maven.docker.util.Logger;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
+import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.plugins.annotations.ResolutionScope;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -9,20 +25,9 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.Map;
 
-import io.fabric8.maven.docker.access.DockerAccessException;
-import io.fabric8.maven.docker.config.BuildImageConfiguration;
-import io.fabric8.maven.docker.config.ImageConfiguration;
-import io.fabric8.maven.docker.service.BuildService;
-import io.fabric8.maven.docker.service.ImagePullManager;
-import io.fabric8.maven.docker.service.JibBuildService;
-import io.fabric8.maven.docker.service.ServiceHub;
-import io.fabric8.maven.docker.util.Logger;
-import io.fabric8.maven.docker.util.EnvUtil;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
+import static io.fabric8.maven.docker.service.RegistryService.createCompleteAuthConfigList;
 
 /**
  * Mojo for building a data image
@@ -30,8 +35,8 @@ import org.apache.maven.plugins.annotations.Parameter;
  * @author roland
  * @since 28.07.14
  */
-@Mojo(name = "build", defaultPhase = LifecyclePhase.INSTALL)
-public class BuildMojo extends AbstractBuildSupportMojo {
+@Mojo(name = "build", defaultPhase = LifecyclePhase.INSTALL, requiresDependencyResolution = ResolutionScope.TEST)
+public class BuildMojo extends AbstractDockerMojo {
 
     public static final String DMP_PLUGIN_DESCRIPTOR = "META-INF/maven/io.fabric8/dmp-plugin";
     public static final String DOCKER_EXTRA_DIR = "docker-extra";
@@ -39,14 +44,8 @@ public class BuildMojo extends AbstractBuildSupportMojo {
     @Parameter(property = "docker.skip.build", defaultValue = "false")
     protected boolean skipBuild;
 
-    @Parameter(property = "docker.skip.pom", defaultValue = "false")
-    protected boolean skipPom;
-
     @Parameter(property = "docker.name", defaultValue = "")
     protected String name;
-
-    @Parameter(defaultValue = "${project.packaging}", required = true)
-    protected String packaging;
 
     /**
      * Skip Sending created tarball to docker daemon
@@ -89,7 +88,7 @@ public class BuildMojo extends AbstractBuildSupportMojo {
         if (Boolean.TRUE.equals(jib)) {
             proceedWithJibBuild(hub, buildContext, imageConfig);
         } else {
-            proceedWithDockerBuild(hub.getBuildService(), buildContext, imageConfig, pullManager);
+            proceedWithDockerBuild(hub, buildContext, imageConfig, pullManager);
         }
     }
 
@@ -98,18 +97,25 @@ public class BuildMojo extends AbstractBuildSupportMojo {
         new JibBuildService(hub, createMojoParameters(), log).build(jibImageFormat, imageConfig, buildContext.getRegistryConfig());
     }
 
-    private void proceedWithDockerBuild(BuildService buildService, BuildService.BuildContext buildContext, ImageConfiguration imageConfig, ImagePullManager pullManager) throws MojoExecutionException, IOException {
+    private void proceedWithDockerBuild(ServiceHub hub, BuildService.BuildContext buildContext, ImageConfiguration imageConfig, ImagePullManager pullManager)
+        throws MojoExecutionException, IOException {
+        BuildService buildService= hub.getBuildService();
         File buildArchiveFile = buildService.buildArchive(imageConfig, buildContext, resolveBuildArchiveParameter());
         if (Boolean.FALSE.equals(shallBuildArchiveOnly())) {
-            buildService.buildImage(imageConfig, pullManager, buildContext, buildArchiveFile);
-        }
-        if (!skipTag) {
-            buildService.tagImage(imageConfig);
+            if (imageConfig.isBuildX()) {
+                BuildArgResolver buildArgResolver = new BuildArgResolver(log);
+                Map<String, String> buildArgsFromExternalSources = buildArgResolver.resolveBuildArgs(buildContext);
+                hub.getBuildXService().build(createProjectPaths(), imageConfig, null, createCompleteAuthConfigList(false, imageConfig, getRegistryConfig(pullRegistry), createMojoParameters(), buildArgsFromExternalSources), buildArchiveFile, buildArgsFromExternalSources);
+            } else {
+                buildService.buildImage(imageConfig, pullManager, buildContext, buildArchiveFile);
+                if (!skipTag && !imageConfig.getBuildConfiguration().skipTag()) {
+                    buildService.tagImage(imageConfig);
+                }
+            }
         }
     }
 
     // We ignore an already existing date file and always return the current date
-
     @Override
     protected Date getReferenceDate() {
         return new Date();
@@ -131,6 +137,7 @@ public class BuildMojo extends AbstractBuildSupportMojo {
                     buildArchiveOnly.equalsIgnoreCase("true")) {
                 return Boolean.parseBoolean(buildArchiveOnly);
             }
+            return true;
         }
         return false;
     }
@@ -151,7 +158,7 @@ public class BuildMojo extends AbstractBuildSupportMojo {
         BuildImageConfiguration buildConfig = aImageConfig.getBuildConfiguration();
 
         if (buildConfig != null) {
-            if(buildConfig.skip() || (skipPom && packaging.equalsIgnoreCase("pom"))) {
+            if (buildConfig.skip() || shouldSkipPom()) {
                 log.info("%s : Skipped building", aImageConfig.getDescription());
             } else {
                 buildAndTag(hub, aImageConfig);

@@ -1,26 +1,30 @@
 package io.fabric8.maven.docker;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
 import org.apache.maven.plugin.MojoExecutionException;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import io.fabric8.maven.docker.access.DockerAccessException;
 import io.fabric8.maven.docker.config.ArchiveCompression;
 import io.fabric8.maven.docker.config.ImageConfiguration;
-import mockit.Deencapsulation;
-import mockit.Expectations;
-import mockit.Tested;
-import mockit.Verifications;
 
-public class SaveMojoTest extends BaseMojoTest {
-    @Tested(fullyInitialized = false)
+@ExtendWith(MockitoExtension.class)
+class SaveMojoTest extends MojoTestBase {
+    @InjectMocks
     private SaveMojo saveMojo;
 
     @Test
-    public void saveWithoutNameAliasOrFile() throws DockerAccessException, MojoExecutionException {
+    void saveWithoutNameAliasOrFile() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceHasImage("example:latest");
 
@@ -30,10 +34,10 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void saveWithoutNameAliasOrFileSkipped() throws DockerAccessException, MojoExecutionException {
+    void saveWithoutNameAliasOrFileSkipped() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
 
-        Deencapsulation.setField(saveMojo, "skipSave", true);
+        saveMojo.skipSave = true;
 
         whenMojoExecutes();
 
@@ -41,22 +45,22 @@ public class SaveMojoTest extends BaseMojoTest {
         thenNoImageIsSaved();
     }
 
-    @Test(expected = MojoExecutionException.class)
-    public void saveMissingWithoutNameAliasOrFile() throws DockerAccessException, MojoExecutionException {
+    @Test
+    void saveMissingWithoutNameAliasOrFile() throws DockerAccessException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceDoesNotHaveImage();
 
-        whenMojoExecutes();
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
 
         thenNoImageIsSaved();
     }
 
     @Test
-    public void saveAndAttachWithoutNameAliasOrFile() throws DockerAccessException, MojoExecutionException {
+    void saveAndAttachWithoutNameAliasOrFile() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceHasImage("example:latest");
 
-        Deencapsulation.setField(saveMojo, "saveClassifier", "archive");
+        saveMojo.saveClassifier = "archive";
 
         whenMojoExecutes();
 
@@ -65,11 +69,11 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void saveWithFile() throws DockerAccessException, MojoExecutionException {
+    void saveWithFile() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceHasImage("example:latest");
 
-        Deencapsulation.setField(saveMojo, "saveFile", "destination/archive-name.tar.bz2");
+        saveMojo.saveFile = "destination/archive-name.tar.bz2";
 
         whenMojoExecutes();
 
@@ -77,7 +81,7 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void saveWithFileInSystemProperty() throws DockerAccessException, MojoExecutionException {
+    void saveWithFileInSystemProperty() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceHasImage("example:latest");
 
@@ -93,51 +97,117 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void saveAndAttachWithFile() throws DockerAccessException, MojoExecutionException {
+    void saveAndAttachWithFile() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithBuild());
         givenQueryServiceHasImage("example:latest");
 
-        Deencapsulation.setField(saveMojo, "saveFile", "destination/archive-name.tar.bz2");
-        Deencapsulation.setField(saveMojo, "saveClassifier", "archive");
+        saveMojo.saveFile = "destination/archive-name.tar.bz2";
+        saveMojo.saveClassifier = "archive";
 
         whenMojoExecutes();
 
         thenImageIsSaved("example:latest", "destination/archive-name.tar.bz2", ArchiveCompression.bzip2);
         thenArtifactAttached("tar.bz", "archive", "destination/archive-name.tar.bz2");
     }
-
+    
     @Test
-    public void saveWithAlias() throws DockerAccessException, MojoExecutionException {
+    void saveWithAlias() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImages(twoImagesWithBuild());
         givenQueryServiceHasImage("example2:latest");
-
-        Deencapsulation.setField(saveMojo, "saveAlias", "example2");
-
+        
+        saveMojo.saveAlias = "example2";
+        
         whenMojoExecutes();
-
+        
         thenImageIsSaved("example2:latest", "mock-target/example2-1.0.0-MOCK.tar.gz", ArchiveCompression.gzip);
     }
+    
+    @Test
+    void failureWithSaveAliasesAndNoSaveFile() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImages(twoImagesWithBuild());
+        
+        saveMojo.saveAliases = Arrays.asList("example1","example2");
+        
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+        // fails
+    }
+    
+    @Test
+    void failureWithSaveAliasesAndSaveNames() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImages(twoImagesWithBuild());
+        
+        saveMojo.saveAliases = Arrays.asList("example1","example2");
+        saveMojo.saveNames = Arrays.asList("example1:latest","example2:latest");
+        
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+        // fails
+    }
+    
+    @Test
+    void saveWithAliasesAndSaveFile() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImages(twoImagesWithBuild());
+        givenQueryServiceHasImage("example1:latest");
+        givenQueryServiceHasImage("example2:latest");
+        
+        saveMojo.saveAliases = Arrays.asList("example1", "example2");
+        saveMojo.saveFile = "destination/archive-name.tar.gz";
+        
+        whenMojoExecutes();
+        
+        thenImagesAreSaved(Arrays.asList("example1:latest", "example2:latest"), "destination/archive-name.tar.gz", ArchiveCompression.gzip);
+    }
+    
+    @Test
+    void saveWithAliasesAndAttachWithFile() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImages(twoImagesWithBuild());
+        givenQueryServiceHasImage("example1:latest");
+        givenQueryServiceHasImage("example2:latest");
 
-
-    @Test(expected = MojoExecutionException.class)
-    public void saveWithNonExistentAlias() throws DockerAccessException, MojoExecutionException {
-        givenProjectWithResolvedImage(singleImageWithBuild());
-
-        Deencapsulation.setField(saveMojo, "saveAlias", "example3");
+        saveMojo.saveAliases = Arrays.asList("example1", "example2");
+        saveMojo.saveFile = "destination/archive-name.tar.bz2";
+        saveMojo.saveClassifier = "archive";
 
         whenMojoExecutes();
+
+        thenImagesAreSaved(Arrays.asList("example1:latest", "example2:latest"), "destination/archive-name.tar.bz2", ArchiveCompression.bzip2);
+        thenArtifactAttached("tar.bz", "archive", "destination/archive-name.tar.bz2");
+    }
+
+    @Test
+    void saveWithNamesAndAttachWithFile() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImages(twoImagesWithBuild());
+        givenQueryServiceHasImage("example1:latest");
+        givenQueryServiceHasImage("example2:latest");
+
+        saveMojo.saveNames = Arrays.asList("example1:latest", "example2:latest");
+        saveMojo.saveFile = "destination/archive-name.tar.bz2";
+        saveMojo.saveClassifier = "archive";
+
+        whenMojoExecutes();
+
+        thenImagesAreSaved(Arrays.asList("example1:latest", "example2:latest"), "destination/archive-name.tar.bz2", ArchiveCompression.bzip2);
+        thenArtifactAttached("tar.bz", "archive", "destination/archive-name.tar.bz2");
+    }
+    
+    @Test
+    void saveWithNonExistentAlias() throws DockerAccessException, MojoExecutionException {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+        
+        saveMojo.saveAlias = "example3";
+        
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
 
         thenHasImageNotCalled();
         thenNoImageIsSaved();
     }
 
     @Test
-    public void saveAndAttachWithAlias() throws DockerAccessException, MojoExecutionException {
+    void saveAndAttachWithAlias() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImages(twoImagesWithBuild());
         givenQueryServiceHasImage("example2:latest");
 
-        Deencapsulation.setField(saveMojo, "saveAlias", "example2");
-        Deencapsulation.setField(saveMojo, "saveClassifier", "archive-%a");
+        saveMojo.saveAlias = "example2";
+        saveMojo.saveClassifier = "archive-%a";
 
         whenMojoExecutes();
 
@@ -146,12 +216,12 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void saveAndAttachWithAliasButAlsoClassifier() throws DockerAccessException, MojoExecutionException {
+    void saveAndAttachWithAliasButAlsoClassifier() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImages(twoImagesWithBuild());
         givenQueryServiceHasImage("example2:latest");
 
-        Deencapsulation.setField(saveMojo, "saveAlias", "example2");
-        Deencapsulation.setField(saveMojo, "saveClassifier", "preferred");
+        saveMojo.saveAlias = "example2";
+        saveMojo.saveClassifier = "preferred";
 
         whenMojoExecutes();
 
@@ -160,46 +230,116 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     @Test
-    public void noFailureWithEmptyImageList() throws DockerAccessException, MojoExecutionException {
-        Deencapsulation.setField(saveMojo, "images", Collections.<ImageConfiguration>emptyList());
-        Deencapsulation.setField(saveMojo, "resolvedImages", Collections.<ImageConfiguration>emptyList());
+    void noFailureWithEmptyImageList() throws DockerAccessException, MojoExecutionException {
+        saveMojo.images = Collections.emptyList();
+        saveMojo.resolvedImages = Collections.emptyList();
 
         whenMojoExecutes();
         // no action from mojo
+        Mockito.verifyNoInteractions(dockerAccess);
     }
 
     @Test
-    public void noFailureWithEmptyBuildImageList() throws DockerAccessException, MojoExecutionException {
+    void noFailureWithEmptyBuildImageList() throws DockerAccessException, MojoExecutionException {
         givenProjectWithResolvedImage(singleImageWithoutBuildOrRun());
 
         whenMojoExecutes();
         // no failure
+        Mockito.verifyNoInteractions(dockerAccess);
     }
 
-    @Test(expected = MojoExecutionException.class)
-    public void failureWithMultipleBuildImageList() throws DockerAccessException, MojoExecutionException {
+    @Test
+    void failureWithMultipleBuildImageList() {
         givenProjectWithResolvedImages(twoImagesWithBuild());
 
-        whenMojoExecutes();
-        // throws exception
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
     }
 
-    @Test(expected = MojoExecutionException.class)
-    public void failureWithSaveAliasAndName() throws DockerAccessException, MojoExecutionException {
+    @Test
+    void failureWithSaveAliasAndName() {
         givenProjectWithResolvedImage(singleImageWithBuild());
 
-        Deencapsulation.setField(saveMojo, "saveAlias", "not-null");
-        Deencapsulation.setField(saveMojo, "saveName", "not-null");
+        saveMojo.saveAlias = "not-null";
+        saveMojo.saveName = "not-null";
 
-        whenMojoExecutes();
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
         // fails
+    }
+
+    @Test
+    void failureWithSaveNameAndSaveNames() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveName = "not-null";
+        saveMojo.saveNames = Arrays.asList("example1:latest");
+
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+    }
+
+    @Test
+    void failureWithSaveNameAndSaveAliases() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveName = "not-null";
+        saveMojo.saveAliases = Arrays.asList("example1");
+
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+    }
+
+    @Test
+    void failureWithSaveAliasAndSaveNames() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveAlias = "not-null";
+        saveMojo.saveNames = Arrays.asList("example1:latest");
+
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+    }
+
+    @Test
+    void failureWithSaveAliasAndSaveAliases() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveAlias = "not-null";
+        saveMojo.saveAliases = Arrays.asList("example1");
+
+        Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+    }
+
+    @Test
+    void saveWithNonExistentName() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveName = "nonexistent:latest";
+
+        MojoExecutionException ex = Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+        Assertions.assertTrue(ex.getMessage().contains("Can not find image with name"));
+    }
+
+    @Test
+    void saveWithNonExistentNames() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveNames = Arrays.asList("nonexistent1:latest", "nonexistent2:latest");
+
+        MojoExecutionException ex = Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+        Assertions.assertTrue(ex.getMessage().contains("Can not find images with name"));
+    }
+
+    @Test
+    void saveWithNonExistentAliases() {
+        givenProjectWithResolvedImage(singleImageWithBuild());
+
+        saveMojo.saveAliases = Arrays.asList("nonexistent1", "nonexistent2");
+
+        MojoExecutionException ex = Assertions.assertThrows(MojoExecutionException.class, this::whenMojoExecutes);
+        Assertions.assertTrue(ex.getMessage().contains("Can not find images with alias"));
     }
 
     @Override
     protected void givenMavenProject(AbstractDockerMojo mojo) {
         super.givenMavenProject(mojo);
-
-        Deencapsulation.setField(mojo, "projectHelper", mavenProjectHelper);
+        ((SaveMojo) mojo).projectHelper = mavenProjectHelper;
     }
 
     private void givenProjectWithResolvedImage(ImageConfiguration image) {
@@ -217,48 +357,37 @@ public class SaveMojoTest extends BaseMojoTest {
     }
 
     private void givenQueryServiceHasImage(final String name) throws DockerAccessException {
-        new Expectations() {{
-            queryService.hasImage(name); result = true;
-        }};
+        Mockito.doReturn(true).when(queryService).hasImage(name);
     }
 
     private void givenQueryServiceDoesNotHaveImage() throws DockerAccessException {
-        new Expectations() {{
-            queryService.hasImage(anyString); result = false;
-        }};
-    }
-
-    private void givenQueryServiceDoesNotHaveImage(final String name) throws DockerAccessException {
-        new Expectations() {{
-            queryService.hasImage(name); result = false;
-        }};
+        Mockito.doReturn(false).when(queryService).hasImage(Mockito.anyString());
     }
 
     private void thenHasImageNotCalled() throws DockerAccessException {
-        new Verifications() {{
-            queryService.hasImage(anyString); times = 0;
-        }};
+        Mockito.verify(queryService, Mockito.times(0)).hasImage(Mockito.anyString());
     }
 
     private void thenNoImageIsSaved() throws DockerAccessException {
-        new Verifications() {{
-            dockerAccess.saveImage(anyString, anyString, (ArchiveCompression)any); times = 0;
-        }};
+        Mockito.verify(dockerAccess, Mockito.never()).saveImage(Mockito.anyString(), Mockito.anyString(), Mockito.any());
     }
 
     private void thenImageIsSaved(String name, String fileName, ArchiveCompression compression) throws DockerAccessException {
-        new Verifications() {{
-            final String image;
-            dockerAccess.saveImage(name, image = withCapture(), compression);
-            assertAbsolutePathEquals(resolveMavenProjectPath(fileName), resolveMavenProjectPath(image));
-        }};
+        ArgumentCaptor<String> savedImage = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(dockerAccess).saveImage(Mockito.eq(name), savedImage.capture(), Mockito.eq(compression));
+        assertAbsolutePathEquals(resolveMavenProjectPath(fileName), resolveMavenProjectPath(savedImage.getValue()));
+    }
+
+    private void thenImagesAreSaved(List<String> names, String fileName, ArchiveCompression compression) throws DockerAccessException {
+        ArgumentCaptor<String> savedImage = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(dockerAccess).saveImages(Mockito.eq(names), savedImage.capture(), Mockito.eq(compression));
+        assertAbsolutePathEquals(resolveMavenProjectPath(fileName), resolveMavenProjectPath(savedImage.getValue()));
     }
 
     private void thenArtifactAttached(String type, String classifier, String fileName) {
-        new Verifications() {{
-            final File artifact;
-            mavenProjectHelper.attachArtifact(mavenProject, type, classifier, artifact = withCapture());
-            assertAbsolutePathEquals(resolveMavenProjectPath(fileName), artifact);
-        }};
+        ArgumentCaptor<File> artifactCapture = ArgumentCaptor.forClass(File.class);
+        Mockito.verify(mavenProjectHelper)
+            .attachArtifact(Mockito.eq(mavenProject), Mockito.eq(type), Mockito.eq(classifier), artifactCapture.capture());
+        assertAbsolutePathEquals(resolveMavenProjectPath(fileName), artifactCapture.getValue());
     }
 }

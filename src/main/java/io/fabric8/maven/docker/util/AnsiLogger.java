@@ -1,5 +1,6 @@
 package io.fabric8.maven.docker.util;
 
+import java.io.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -7,11 +8,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import org.apache.maven.plugin.logging.Log;
 import org.codehaus.plexus.util.StringUtils;
 import org.fusesource.jansi.Ansi;
-import org.fusesource.jansi.AnsiConsole;
 
 import static org.fusesource.jansi.Ansi.Color.*;
 import static org.fusesource.jansi.Ansi.ansi;
@@ -22,7 +24,7 @@ import static org.fusesource.jansi.Ansi.ansi;
  * @author roland
  * @since 31.03.14
  */
-public class AnsiLogger implements Logger {
+public class AnsiLogger implements Logger, Closeable {
 
     // prefix used for console output
     public static final String DEFAULT_LOG_PREFIX = "DOCKER> ";
@@ -31,9 +33,11 @@ public class AnsiLogger implements Logger {
     private final Log log;
     private final String prefix;
     private final boolean batchMode;
+    private final File outputFile;
 
     private boolean isVerbose = false;
     private List<LogVerboseCategory> verboseModes = null;
+    private PrintWriter pw;
 
     // ANSI escapes for various colors (or empty strings if no coloring is used)
     static Ansi.Color
@@ -47,8 +51,8 @@ public class AnsiLogger implements Logger {
 
 
     // Map remembering lines
-    private ThreadLocal<Map<String, Integer>> imageLines = new ThreadLocal<>();
-    private ThreadLocal<AtomicInteger> updateCount = new ThreadLocal<>();
+    private ThreadLocal<Map<String, Integer>> imageLines = ThreadLocal.withInitial(HashMap::new);
+    private ThreadLocal<AtomicInteger> updateCount = ThreadLocal.withInitial(AtomicInteger::new);
 
     // Whether to use ANSI codes
     private boolean useAnsi;
@@ -59,44 +63,80 @@ public class AnsiLogger implements Logger {
     }
 
     public AnsiLogger(Log log, boolean useColor, String verbose, boolean batchMode) {
-        this(log, useColor, verbose, batchMode, DEFAULT_LOG_PREFIX);
+        this(log, useColor, verbose, batchMode, DEFAULT_LOG_PREFIX, null);
     }
 
     public AnsiLogger(Log log, boolean useColor, String verbose, boolean batchMode, String prefix) {
+        this(log, useColor, verbose, batchMode, prefix, null);
+    }
+
+    /**
+     * @param outputFile file to write the log to instead of the console, or <code>null</code> for the console
+     * @throws UncheckedIOException if the output file cannot be opened for writing
+     */
+    public AnsiLogger(Log log, boolean useColor, String verbose, boolean batchMode, String prefix, File outputFile) {
         this.log = log;
         this.prefix = prefix;
-        this.batchMode = batchMode;
+        this.outputFile = outputFile;
+        if (this.outputFile == null) {
+            this.batchMode = batchMode;
+        } else {
+            this.batchMode = true;
+        }
         checkVerboseLoggingEnabled(verbose);
+        // Open the output file before initializeColor() touches the global Ansi state: if opening fails,
+        // the caller aborts and would otherwise leave that state switched for the rest of the build.
+        initializePrintWriter();
         initializeColor(useColor);
     }
 
     /** {@inheritDoc} */
     public void debug(String message, Object ... params) {
         if (isDebugEnabled()) {
-            log.debug(prefix + format(message, params));
+            logOrPrintToFile(
+                    log -> true,
+                    log -> log.debug(prefix + format(message, params)),
+                    message,
+                    params);
         }
     }
 
     /** {@inheritDoc} */
     public void info(String message, Object ... params) {
-        log.info(colored(message, COLOR_INFO, true, params));
+        logOrPrintToFile(
+                log -> log.isInfoEnabled(),
+                log -> log.info(colored(message, COLOR_INFO, true, params)),
+                message,
+                params);
     }
 
     /** {@inheritDoc} */
     public void verbose(LogVerboseCategory logVerboseCategory, String message, Object ... params) {
         if (isVerbose && verboseModes != null && verboseModes.contains(logVerboseCategory)) {
-            log.info(ansi().fgBright(BLACK).a(prefix).a(format(message, params)).reset().toString());
+            logOrPrintToFile(
+                    log -> true,
+                    log -> log.info(ansi().fgBright(BLACK).a(prefix).a(format(message, params)).reset().toString()),
+                    message,
+                    params);
         }
     }
 
     /** {@inheritDoc} */
-    public void warn(String format, Object ... params) {
-        log.warn(colored(format, COLOR_WARNING, true, params));
+    public void warn(String message, Object ... params) {
+        logOrPrintToFile(
+                log -> log.isWarnEnabled(),
+                log -> log.warn(colored(message, COLOR_WARNING, true, params)),
+                message,
+                params);
     }
 
     /** {@inheritDoc} */
     public void error(String message, Object ... params) {
-        log.error(colored(message, COLOR_ERROR, true, params));
+        logOrPrintToFile(
+                log -> log.isErrorEnabled(),
+                log -> log.error(colored(message, COLOR_ERROR, true, params)),
+                message,
+                params);
     }
 
     @Override
@@ -192,6 +232,7 @@ public class AnsiLogger implements Logger {
     public void progressFinished() {
         if (!batchMode && log.isInfoEnabled()) {
             imageLines.remove();
+            updateCount.remove();
             print(ansi().reset().toString());
             if (!useAnsi) {
                 println("");
@@ -205,12 +246,21 @@ public class AnsiLogger implements Logger {
 
     private void initializeColor(boolean useColor) {
         this.useAnsi = useColor && !log.isDebugEnabled();
-        if (useAnsi) {
-            AnsiConsole.systemInstall();
-            Ansi.setEnabled(true);
+        Ansi.setEnabled(useAnsi);
+    }
+
+    private void initializePrintWriter() {
+        if (outputFile == null) {
+            return;
         }
-        else {
-            Ansi.setEnabled(false);
+        File parent = outputFile.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new UncheckedIOException(new IOException("Cannot create directory " + parent));
+        }
+        try {
+            this.pw = new PrintWriter(outputFile);
+        } catch (FileNotFoundException e) {
+            throw new UncheckedIOException(e);
         }
     }
 
@@ -322,16 +372,6 @@ public class AnsiLogger implements Logger {
         this.isVerbose = true;
     }
 
-    private Boolean checkBackwardVersionValues(String verbose) {
-        if (verbose.isEmpty()) {
-            return Boolean.TRUE;
-        }
-        if (verbose.equalsIgnoreCase("true") || verbose.equalsIgnoreCase("false")) {
-            return Boolean.parseBoolean(verbose.toLowerCase());
-        }
-        return null;
-    }
-
     private List<LogVerboseCategory> getVerboseModesFromString(String groups) {
         List<LogVerboseCategory> ret = new ArrayList<>();
         for (String group : groups.split(",")) {
@@ -342,5 +382,21 @@ public class AnsiLogger implements Logger {
             }
         }
         return ret;
+    }
+
+    private void logOrPrintToFile(Predicate<Log> logPredicate, Consumer<Log> logConsumer, String message, Object ... params) {
+        if (pw != null && logPredicate.test(log)) {
+            pw.println(format(message, params));
+        } else {
+            logConsumer.accept(log);
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (pw != null) {
+            pw.flush();
+            pw.close();
+        }
     }
 }

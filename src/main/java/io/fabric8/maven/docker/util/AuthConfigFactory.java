@@ -6,17 +6,20 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import com.google.gson.JsonObject;
 
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.fabric8.maven.docker.access.AuthConfigList;
 import org.apache.commons.io.IOUtils;
 import org.apache.http.HttpStatus;
 import org.apache.http.client.config.RequestConfig;
@@ -29,10 +32,10 @@ import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.settings.Server;
 import org.apache.maven.settings.Settings;
-import org.codehaus.plexus.PlexusContainer;
-import org.codehaus.plexus.component.repository.exception.ComponentLookupException;
+import org.apache.maven.settings.crypto.DefaultSettingsDecryptionRequest;
+import org.apache.maven.settings.crypto.SettingsDecrypter;
+import org.apache.maven.settings.crypto.SettingsDecryptionResult;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
 import com.google.common.net.UrlEscapers;
 import com.google.gson.Gson;
@@ -41,12 +44,18 @@ import io.fabric8.maven.docker.access.AuthConfig;
 import io.fabric8.maven.docker.access.ecr.EcrExtendedAuth;
 import io.fabric8.maven.docker.util.aws.AwsSdkAuthConfigFactory;
 
+import javax.inject.Inject;
+import javax.inject.Named;
+import javax.inject.Singleton;
+
 /**
  * Factory for creating docker specific authentication configuration
  *
  * @author roland
  * @since 29.07.14
  */
+@Singleton
+@Named
 public class AuthConfigFactory {
 
     // Whether to check for OpenShift authentication
@@ -54,20 +63,21 @@ public class AuthConfigFactory {
 
     static final String DOCKER_LOGIN_DEFAULT_REGISTRY = "https://index.docker.io/v1/";
 
-    private final PlexusContainer container;
-
     private Logger log;
     private static final String[] DEFAULT_REGISTRIES = new String[]{
             "docker.io", "index.docker.io", "registry.hub.docker.com"
     };
 
+    private final SettingsDecrypter settingsDecrypter;
+
     /**
      * Constructor which should be used during startup phase of a plugin
      *
-     * @param container the container used for do decryption of passwords
+     * @param settingsDecrypter the settingsDecrypter used for do decryption of passwords
      */
-    public AuthConfigFactory(PlexusContainer container) {
-        this.container = container;
+    @Inject
+    public AuthConfigFactory(SettingsDecrypter settingsDecrypter) {
+        this.settingsDecrypter = settingsDecrypter;
     }
 
     public void setLog(Logger log) {
@@ -116,18 +126,22 @@ public class AuthConfigFactory {
         AuthConfig ret = createStandardAuthConfig(isPush, authConfig, settings, user, registry);
         if (ret != null) {
             if (registry == null || skipExtendedAuth) {
+                ret.setRegistry(registry);
                 return ret;
             }
             try {
-                return extendedAuthentication(ret, registry);
+                ret= extendedAuthentication(ret, registry);
+                ret.setRegistry(registry);
+                return ret;
             } catch (IOException e) {
                 throw new MojoExecutionException(e.getMessage(), e);
             }
         }
 
         // Finally check ~/.docker/config.json
-        ret = getAuthConfigFromDockerConfig(registry);
+        ret = getAuthConfigFromDockerConfig(log, registry);
         if (ret != null) {
+            ret.setRegistry(registry);
             log.debug("AuthConfig: credentials from ~/.docker/config.json");
             return ret;
         }
@@ -148,7 +162,7 @@ public class AuthConfigFactory {
      * @throws MojoExecutionException
      */
     private AuthConfig extendedAuthentication(AuthConfig standardAuthConfig, String registry) throws IOException, MojoExecutionException {
-        EcrExtendedAuth ecr = new EcrExtendedAuth(log, registry);
+        EcrExtendedAuth ecr = new EcrExtendedAuth(log, registry, System.getProperty(EcrExtendedAuth.ECR_ENDPOINT_PROPERTY));
         if (ecr.isAwsRegistry()) {
             return ecr.extendedAuth(standardAuthConfig);
         }
@@ -492,22 +506,37 @@ public class AuthConfigFactory {
         return defaultServer != null ? createAuthConfigFromServer(defaultServer) : null;
     }
 
-    private AuthConfig getAuthConfigFromDockerConfig(String registry) throws MojoExecutionException {
+    public static boolean hasAuthForRegistryInDockerConfig(Logger logger, String registry, AuthConfigList authConfigList) throws MojoExecutionException {
+        String registryToLookup = Optional.ofNullable(registry).orElse(DOCKER_LOGIN_DEFAULT_REGISTRY);
+        AuthConfig authConfigFromDockerConfig = getAuthConfigFromDockerConfig(logger, registryToLookup);
+        if (authConfigFromDockerConfig != null) {
+            String authsInDockerConfig = new String(Base64.getEncoder().encode((authConfigFromDockerConfig.getUsername() + ":" + authConfigFromDockerConfig.getPassword()).getBytes(StandardCharsets.UTF_8)));
+            return authConfigList.toJson().contains(authsInDockerConfig);
+        }
+        return false;
+    }
+
+    private static AuthConfig getAuthConfigFromDockerConfig(Logger log, String registry) throws MojoExecutionException {
         JsonObject dockerConfig = DockerFileUtil.readDockerConfig();
         if (dockerConfig == null) {
             return null;
         }
-        String registryToLookup = registry != null ? registry : DOCKER_LOGIN_DEFAULT_REGISTRY;
+        String registryToLookup;
+        if (registry != null && Arrays.stream(DEFAULT_REGISTRIES).noneMatch(r -> r.equalsIgnoreCase(registry))) {
+            registryToLookup = registry;
+        } else {
+            registryToLookup = DOCKER_LOGIN_DEFAULT_REGISTRY;
+        }
 
         if (dockerConfig.has("credHelpers") || dockerConfig.has("credsStore")) {
             if (dockerConfig.has("credHelpers")) {
                 final JsonObject credHelpers = dockerConfig.getAsJsonObject("credHelpers");
                 if (credHelpers.has(registryToLookup)) {
-                    return extractAuthConfigFromCredentialsHelper(registryToLookup, credHelpers.get(registryToLookup).getAsString());
+                    return extractAuthConfigFromCredentialsHelper(log, registryToLookup, credHelpers.get(registryToLookup).getAsString());
                 }
             }
             if (dockerConfig.has("credsStore")) {
-                return extractAuthConfigFromCredentialsHelper(registryToLookup, dockerConfig.get("credsStore").getAsString());
+                return extractAuthConfigFromCredentialsHelper(log, registryToLookup, dockerConfig.get("credsStore").getAsString());
             }
         }
 
@@ -518,7 +547,7 @@ public class AuthConfigFactory {
         return null;
     }
 
-    private AuthConfig extractAuthConfigFromDockerConfigAuths(String registryToLookup, JsonObject auths) {
+    private static AuthConfig extractAuthConfigFromDockerConfigAuths(String registryToLookup, JsonObject auths) {
         JsonObject credentials = getCredentialsNode(auths,registryToLookup);
         if (credentials == null || !credentials.has("auth")) {
             return null;
@@ -529,7 +558,7 @@ public class AuthConfigFactory {
         return new AuthConfig(auth, email, identityToken);
     }
 
-    private AuthConfig extractAuthConfigFromCredentialsHelper(String registryToLookup, String credConfig) throws MojoExecutionException {
+    private static AuthConfig extractAuthConfigFromCredentialsHelper(Logger log, String registryToLookup, String credConfig) throws MojoExecutionException {
         CredentialHelperClient credentialHelper = new CredentialHelperClient(log, credConfig);
         String version = credentialHelper.getVersion();
         log.debug("AuthConfig: credentials from credential helper/store %s%s",
@@ -538,7 +567,7 @@ public class AuthConfigFactory {
         return credentialHelper.getAuthConfig(registryToLookup);
     }
 
-    private JsonObject getCredentialsNode(JsonObject auths,String registryToLookup) {
+    private static JsonObject getCredentialsNode(JsonObject auths,String registryToLookup) {
         if (auths.has(registryToLookup)) {
             return auths.getAsJsonObject(registryToLookup);
         }
@@ -646,16 +675,12 @@ public class AuthConfigFactory {
     }
 
     private String decrypt(String password) throws MojoExecutionException {
-        try {
-            // Done by reflection since I have classloader issues otherwise
-            Object secDispatcher = container.lookup(SecDispatcher.ROLE, "maven");
-            Method method = secDispatcher.getClass().getMethod("decrypt",String.class);
-            return (String) method.invoke(secDispatcher,password);
-        } catch (ComponentLookupException e) {
-            throw new MojoExecutionException("Error looking security dispatcher",e);
-        } catch (ReflectiveOperationException e) {
-            throw new MojoExecutionException("Cannot decrypt password: " + e.getCause(),e);
-        }
+        Server stub = new Server();
+        stub.setUsername("whatever");
+        stub.setPassword(password);
+
+        SettingsDecryptionResult result = settingsDecrypter.decrypt(new DefaultSettingsDecryptionRequest(stub));
+        return result.getServers().get(0).getPassword();
     }
 
     private AuthConfig createAuthConfigFromServer(Server server) throws MojoExecutionException {

@@ -1,0 +1,143 @@
+name: E2E Tests
+
+env:
+  MAVEN_ARGS: -B -C -V -ntp -Dhttp.keepAlive=false -e
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    - cron: '0 1 * * *' # Every day at 1
+
+concurrency:
+  # Only run once for latest commit per ref and cancel other (previous) runs.
+  group: ci-e2e-docker-maven-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  buildWithoutTests:
+    name: BuildWithoutTests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache .m2 registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: cache-e2e-${{ github.sha }}-${{ github.run_id }}
+      - name: Setup Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      - name: Install DMP
+        run: mvn ${MAVEN_ARGS} clean install -DskipTests -Djacoco.skip=true
+
+  linux-build:
+    name: Linux
+    runs-on: ubuntu-latest
+    needs: buildWithoutTests
+    strategy:
+      fail-fast: false
+      matrix:
+        docker: [v27.1.1, v26.1.4, v25.0.2, v24.0.9, v23.0.6, v20.10.24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      - name: Cache .m2 registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: cache-e2e-${{ github.sha }}-${{ github.run_id }}
+      - name: Set up Docker
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: ${{ matrix.docker }}
+      - name: Run Integration tests
+        run: |
+          # Workaround for https://github.com/docker/for-linux/issues/748
+          DOCKER_INSTALL_PATH=`which docker`
+          sudo cp $DOCKER_INSTALL_PATH-init /sbin/docker-init
+          cd it/
+          mvn clean install
+  macos-build:
+    name: MacOS
+    needs: buildWithoutTests
+    # Using an Intel runner because ARM64 macOS runners don't support nested virtualization
+    # required for Docker/QEMU. See: https://github.com/actions/runner-images/issues/9460
+    runs-on: macos-26-intel
+    # Docker lives in a Lima VM here, so every step that talks to it has to be pointed at that
+    # VM's socket. Set once for the whole job, so the value cannot drift apart between steps.
+    env:
+      DOCKER_HOST: unix:///Users/runner/.lima/docker-actions-toolkit/docker.sock
+    strategy:
+      fail-fast: false
+      matrix:
+        docker: [v27.5.1, v26.1.4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      - name: Cache .m2 registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: cache-e2e-${{ github.sha }}-${{ github.run_id }}
+      - name: Set up Docker
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: ${{ matrix.docker }}
+      - name: Set up Docker Buildx for Docker 27
+        if: matrix.docker == 'v27.5.1'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.20.0
+      - name: Set up latest Docker Buildx
+        if: matrix.docker != 'v27.5.1'
+        run: |
+          brew install docker-buildx
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn /usr/local/opt/docker-buildx/bin/docker-buildx ~/.docker/cli-plugins/docker-buildx
+      # Name resolution inside that VM is flaky enough that a single failed lookup of
+      # registry-1.docker.io takes down a whole reactor run - the pull during the build has no retry
+      # of its own. Pulling the base images up front costs no extra time, they are needed anyway, but
+      # it puts the pull somewhere a retry can be wrapped around it.
+      - name: Pre-pull the base images used by the integration tests
+        run: |
+          images="alpine busybox jetty debian:bullseye-slim
+                  eclipse-temurin:17-jre-alpine eclipse-temurin:21-jre-alpine
+                  azul/zulu-openjdk-alpine:11 azul/zulu-openjdk-alpine:17-jre
+                  registry.access.redhat.com/ubi8/ubi-minimal:8.6"
+          for image in $images; do
+            for attempt in 1 2 3 4 5; do
+              if docker pull --quiet "$image"; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::Could not pull $image after 5 attempts"
+                exit 1
+              fi
+              echo "Pulling $image failed, retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            done
+          done
+      - name: Run Integration tests
+        run: |
+          cd it/
+          mvn clean install

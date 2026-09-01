@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
@@ -57,7 +58,7 @@ public class StopMojo extends AbstractDockerMojo {
     protected boolean autoCreateCustomNetworks;
 
     @Parameter( property = "docker.allContainers", defaultValue = "false" )
-    private boolean allContainers;
+    boolean allContainers;
 
     @Parameter( property = "docker.sledgeHammer", defaultValue = "false" )
     private boolean sledgeHammer;
@@ -66,13 +67,59 @@ public class StopMojo extends AbstractDockerMojo {
      * Naming pattern for how to name containers when started
      */
     @Parameter(property = "docker.containerNamePattern")
-    private String containerNamePattern = ContainerNamingUtil.DEFAULT_CONTAINER_NAME_PATTERN;
+    String containerNamePattern = ContainerNamingUtil.DEFAULT_CONTAINER_NAME_PATTERN;
 
     @Parameter(property = "docker.stopNamePattern")
-    private String stopNamePattern;
+    String stopNamePattern;
+
+    @Parameter(property = "docker.skip", defaultValue = "false")
+    protected boolean skip;
+
+    /**
+     * If true, the containers are not stopped right away, but when the build is finished (success or failed).
+     */
+    @Parameter(property = "docker.executeStopOnVMShutdown", defaultValue = "false")
+    private boolean executeStopOnVMShutdown;
+
+    @Override
+    public void execute() throws MojoExecutionException, MojoFailureException {
+        if(skip) {
+            return;
+        }
+
+        if (this.executeStopOnVMShutdown) {
+            this.executeStopOnVMShutdown = false;
+           if (!invokedTogetherWithDockerStart()) {
+                throw new MojoExecutionException("docker:stop with executeStopOnVMShutdown is only possible if" +
+                        " the docker containers started within the same maven session.");
+            }
+
+            try {
+                // HttpDelete class is not used during start mojo, so we need to load it and initialize it. It is not
+                // possible to load classes in the shutdown hook as
+                Class.forName("org.apache.http.client.methods.HttpDelete", true, this.getClass().getClassLoader());
+            } catch (ClassNotFoundException e) {
+                log.error("Failure in loading org.apache.http.client.methods.HttpDelete class: %s", e.getMessage());
+            }
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    super.execute();
+                } catch (MojoExecutionException | MojoFailureException e) {
+                    log.error("Failure in stopping container: %s", e.getMessage());
+                }
+            }));
+        } else {
+            super.execute();
+        }
+    }
 
     @Override
     protected void executeInternal(ServiceHub hub) throws MojoExecutionException, IOException, ExecException {
+        if(skip) {
+            return;
+        }
+
         QueryService queryService = hub.getQueryService();
         RunService runService = hub.getRunService();
 

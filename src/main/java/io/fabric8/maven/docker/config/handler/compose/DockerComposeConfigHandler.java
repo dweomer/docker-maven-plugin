@@ -2,6 +2,7 @@ package io.fabric8.maven.docker.config.handler.compose;
 
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import io.fabric8.maven.docker.config.*;
 import io.fabric8.maven.docker.config.handler.ExternalConfigHandler;
@@ -14,6 +15,10 @@ import org.apache.maven.shared.filtering.MavenReaderFilter;
 import org.apache.maven.shared.filtering.MavenReaderFilterRequest;
 import org.yaml.snakeyaml.Yaml;
 
+import javax.inject.Inject;
+import javax.inject.Named;
+import javax.inject.Singleton;
+
 import static io.fabric8.maven.docker.config.handler.compose.ComposeUtils.resolveAbsolutely;
 import static io.fabric8.maven.docker.config.handler.compose.ComposeUtils.resolveComposeFileAbsolutely;
 
@@ -22,28 +27,27 @@ import static io.fabric8.maven.docker.config.handler.compose.ComposeUtils.resolv
  * Docker Compose handler for allowing a docker-compose file to be used
  * to specify the docker images.
  */
-
-// Moved temporarily to resources/META-INF/plexus/components.xml because of https://github.com/codehaus-plexus/plexus-containers/issues/4
-// @Component(role = ExternalConfigHandler.class)
+@Singleton
+@Named(DockerComposeConfigHandler.TYPE_NAME)
 public class DockerComposeConfigHandler implements ExternalConfigHandler {
+    public static final String TYPE_NAME = "compose";
 
     @Override
     public String getType() {
-        return "compose";
+        return TYPE_NAME;
     }
 
-    // Enable later when issue above is fixed. In the meantime its declared in the components.xml, too
-    // @Requirement(role = MavenReaderFilter.class)
+    @Inject
     MavenReaderFilter readerFilter;
 
     @Override
     @SuppressWarnings("unchecked")
     public List<ImageConfiguration> resolve(ImageConfiguration unresolvedConfig, MavenProject project, MavenSession session) {
-        List<ImageConfiguration> resolved = new ArrayList<>();
-
         DockerComposeConfiguration handlerConfig = new DockerComposeConfiguration(unresolvedConfig.getExternalConfig());
         File composeFile = resolveComposeFileAbsolutely(handlerConfig.getBasedir(), handlerConfig.getComposeFile(), project);
+        Map<String, DockerComposeServiceWrapper> allServices = new LinkedHashMap<>();
 
+        // First retrieve all services from the compose file
         for (Object composeO : getComposeConfigurations(composeFile, project, session)) {
             Map<String, Object> compose = (Map<String, Object>) composeO;
             validateVersion(compose, composeFile);
@@ -52,12 +56,35 @@ public class DockerComposeConfigHandler implements ExternalConfigHandler {
                 String serviceName = entry.getKey();
                 Map<String, Object> serviceDefinition = (Map<String, Object>) entry.getValue();
 
-                DockerComposeServiceWrapper mapper = new DockerComposeServiceWrapper(serviceName, composeFile, serviceDefinition, unresolvedConfig, resolveAbsolutely(handlerConfig.getBasedir(), project));
-                resolved.add(buildImageConfiguration(mapper, composeFile.getParentFile(), unresolvedConfig, handlerConfig));
+                allServices.put(serviceName, new DockerComposeServiceWrapper(serviceName, composeFile, serviceDefinition,
+                    unresolvedConfig, resolveAbsolutely(handlerConfig.getBasedir(), project)));
             }
         }
-
-        return resolved;
+        
+        // Loop over all known services and add wait configurations where necessary
+        for (DockerComposeServiceWrapper service : allServices.values()) {
+            for (String dependentServiceName : service.getDependsOn()) {
+                DockerComposeServiceWrapper dependentService = allServices.get(dependentServiceName);
+                
+                if (dependentService != null) {
+                    if (service.equals(dependentService)) {
+                        service.throwIllegalArgumentException("Invalid self-reference in dependent services");
+                    }
+                    
+                    // Note: for short syntax, we don't need to do anything else
+                    if (service.usesLongSyntaxDependsOn()) {
+                        dependentService.enableWaitCondition(service.getWaitCondition(dependentServiceName));
+                    }
+                } else {
+                    service.throwIllegalArgumentException("Undefined dependent service \"" + dependentServiceName + "\"");
+                }
+            }
+        }
+        
+        // Now that we cross-correlated all dependencies from all services, let's build & return image configurations
+        return allServices.values().stream()
+            .map(svc -> buildImageConfiguration(svc, composeFile.getParentFile(), unresolvedConfig, handlerConfig))
+            .collect(Collectors.toList());
     }
 
     private void validateVersion(Map<String, Object> compose, File file) {
@@ -131,7 +158,6 @@ public class DockerComposeConfigHandler implements ExternalConfigHandler {
                 false,
                 session,
                 null);
-        //request.setEscapeString("$");
         return readerFilter.filter(request);
     }
 
@@ -168,11 +194,14 @@ public class DockerComposeConfigHandler implements ExternalConfigHandler {
         return builder
                 .capAdd(wrapper.getCapAdd())
                 .capDrop(wrapper.getCapDrop())
+                .sysctls(wrapper.getSysctls())
                 .cmd(wrapper.getCommand())
                 // cgroup_parent not supported
                 // container_name is taken as an alias and ignored here for run config
                 // devices not supported
                 .dependsOn(wrapper.getDependsOn()) // depends_on relies that no container_name is set
+                .healthcheck(wrapper.getHealthCheckConfiguration())
+                .wait(wrapper.getWaitConfiguration())
                 .dns(wrapper.getDns())
                 .dnsSearch(wrapper.getDnsSearch())
                 .tmpfs(wrapper.getTmpfs())
@@ -186,6 +215,7 @@ public class DockerComposeConfigHandler implements ExternalConfigHandler {
                 .labels(wrapper.getLabels())
                 .links(wrapper.getLinks()) // external_links and links are handled the same in d-m-p
                 .log(wrapper.getLogConfiguration())
+                .platform(wrapper.getPlatform())
                 .network(wrapper.getNetworkConfig()) // TODO: Up to now only a single network is supported and not ipv4, ipv6
                 // pid not supported
                 .ports(wrapper.getPortMapping())

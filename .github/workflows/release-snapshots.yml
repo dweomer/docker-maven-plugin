@@ -1,0 +1,39 @@
+name: Release to SNAPSHOTS Maven Central
+
+env:
+  MAVEN_ARGS: -B -C -V -ntp -Dhttp.keepAlive=false -e ${{ github.event.inputs.additional_args }}
+  RELEASE_MAVEN_ARGS: -Prelease -Denforcer.skip=true
+  MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+  MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+  SIGNINGPASSWORD: ${{ secrets.SIGNINGPASSWORD }}
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *' # Every day at 2am
+
+permissions:
+  contents: read
+
+jobs:
+  release-snapshots:
+    name: Release SNAPSHOT
+    # Cheap way to prevent accidental releases
+    # Modify the list to add users with release permissions
+    if: contains('["rhuss","rohanKanojia"]', github.actor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          java-version: 11
+          distribution: temurin
+          server-id: central-portal-snapshots
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.SIGNINGKEY }}
+          gpg-passphrase: SIGNINGPASSWORD
+      - name: Build and Release Project
+        run: ./mvnw ${MAVEN_ARGS} ${RELEASE_MAVEN_ARGS} clean deploy

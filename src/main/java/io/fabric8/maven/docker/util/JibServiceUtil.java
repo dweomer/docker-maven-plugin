@@ -20,7 +20,6 @@ import io.fabric8.maven.docker.assembly.AssemblyFiles;
 import io.fabric8.maven.docker.config.Arguments;
 import io.fabric8.maven.docker.config.BuildImageConfiguration;
 import io.fabric8.maven.docker.config.ImageConfiguration;
-import io.fabric8.maven.docker.model.Image;
 import org.apache.commons.lang3.StringUtils;
 
 import java.io.File;
@@ -134,7 +133,7 @@ public class JibServiceUtil {
             }
         } catch (IllegalStateException e) {
             log.error("Exception occurred while pushing the image: %s", imageConfiguration.getName());
-            throw new IllegalStateException(e.getMessage(), e);
+            throw e;
         } catch (InterruptedException e) {
             log.error("Thread interrupted", e);
             Thread.currentThread().interrupt();
@@ -204,14 +203,14 @@ public class JibServiceUtil {
     }
 
     static ImageFormat getImageFormat(String jibImageFormat) {
-        if (jibImageFormat != null && jibImageFormat.toLowerCase().equalsIgnoreCase("oci")) {
+        if (jibImageFormat != null && jibImageFormat.equalsIgnoreCase("oci")) {
             return ImageFormat.OCI;
         }
         return ImageFormat.Docker;
     }
 
     private static void submitPushToJib(TarImage baseImage, RegistryImage targetImage, ExecutorService jibBuildExecutor, Logger logger) throws InterruptedException, ExecutionException, RegistryException, CacheDirectoryCreationException, IOException {
-        Jib.from(baseImage).containerize(Containerizer.to(targetImage)
+        Jib.from(baseImage).setCreationTime(Instant.now()).containerize(Containerizer.to(targetImage)
                 .setAllowInsecureRegistries(true)
                 .setExecutorService(jibBuildExecutor)
                 .addEventHandler(LogEvent.class, log(logger))

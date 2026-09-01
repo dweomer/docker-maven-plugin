@@ -19,9 +19,8 @@ package io.fabric8.maven.docker.access.util;
 import java.io.*;
 import java.util.concurrent.*;
 
-import io.fabric8.maven.docker.util.AnsiLogger;
 import io.fabric8.maven.docker.util.Logger;
-import org.apache.maven.shared.utils.StringUtils;
+import org.codehaus.plexus.util.StringUtils;
 
 /**
  * @author roland
@@ -81,6 +80,9 @@ public abstract class ExternalCommand {
             executor.shutdown();
             executor.awaitTermination(10, TimeUnit.SECONDS);
         } catch (IllegalThreadStateException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             process.destroy();
             statusCode = -1;
         }
@@ -99,12 +101,17 @@ public abstract class ExternalCommand {
 
     private Process startProcess() throws IOException {
         try {
-            return Runtime.getRuntime().exec(getArgs());
+            return startCommand(getArgs());
         } catch (IOException e) {
             throw new IOException(String.format("Failed to start '%s' : %s",
                                                 getCommandAsString(),
                                                 e.getMessage()), e);
         }
+    }
+
+    // Unit test mocking point
+    public static Process startCommand(String[] cmd) throws IOException {
+        return new ProcessBuilder(cmd).start();
     }
 
     protected String getCommandAsString() {

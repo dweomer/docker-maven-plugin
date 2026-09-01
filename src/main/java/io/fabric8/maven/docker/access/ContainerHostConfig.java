@@ -11,11 +11,11 @@ import java.util.Map;
 
 import io.fabric8.maven.docker.config.LogConfiguration;
 import io.fabric8.maven.docker.config.UlimitConfig;
-import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.JsonFactory;
 
 public class ContainerHostConfig {
 
+    private static final String HOST_GATEWAY = "host-gateway";
     final JsonObject startConfig = new JsonObject();
 
     public ContainerHostConfig() {}
@@ -25,9 +25,8 @@ public class ContainerHostConfig {
             JsonArray binds = new JsonArray();
 
             for (String volume : bind) {
-                volume = EnvUtil.fixupPath(volume);
-
-                if (volume.contains(":")) {
+                // only add binding if : is not followed by \ (Windows)
+                if (volume.matches(".*:(?!\\\\).*")) {
                     binds.add(volume);
                 }
             }
@@ -42,6 +41,13 @@ public class ContainerHostConfig {
 
     public ContainerHostConfig capDrop(List<String> capDrop) {
         return addAsArray("CapDrop", capDrop);
+    }
+
+    public ContainerHostConfig sysctls(Map<String, String> sysctls) {
+        if (sysctls != null && sysctls.size() > 0) {
+            startConfig.add("Sysctls", JsonFactory.newJsonObject(sysctls));
+        }
+        return this;
     }
 
     public ContainerHostConfig securityOpts(List<String> securityOpt) {
@@ -74,8 +80,8 @@ public class ContainerHostConfig {
         return add("CpuShares", cpuShares);
     }
 
-    public ContainerHostConfig cpus(Long cpus) {
-        return add ("NanoCpus", cpus);
+    public ContainerHostConfig cpus(Double cpus) {
+        return add ("NanoCpus", convertToNanoCpus(cpus));
     }
 
     public ContainerHostConfig cpuSet(String cpuSet) {
@@ -91,11 +97,7 @@ public class ContainerHostConfig {
                     throw new IllegalArgumentException("extraHosts must be in the form <host:host|ip>");
                 }
 
-                try {
-                    mapped.add(i, parts[0] + ":" + InetAddress.getByName(parts[1]).getHostAddress());
-                } catch (UnknownHostException e) {
-                    throw new IllegalArgumentException("unable to resolve ip address for " + parts[1], e);
-                }
+                mapped.add(i, parts[0] + ":" + resolveHostAddress(parts[1]));
             }
             return addAsArray("ExtraHosts", mapped);
         }
@@ -120,6 +122,10 @@ public class ContainerHostConfig {
             startConfig.add("Ulimits", ulimits);
         }
         return this;
+    }
+
+    public ContainerHostConfig userns(String userns) {
+        return add("UsernsMode", userns);
     }
 
     private void addIfNotNull(JsonObject json, String key, Integer value) {
@@ -225,6 +231,17 @@ public class ContainerHostConfig {
         return this;
     }
 
+    private String resolveHostAddress(String host) {
+        if (HOST_GATEWAY.equalsIgnoreCase(host)) {
+            return host;
+        }
+        try {
+            return InetAddress.getByName(host).getHostAddress();
+        } catch (UnknownHostException e) {
+            throw new IllegalArgumentException("unable to resolve ip address for " + host, e);
+        }
+    }
+
     private ContainerHostConfig add(String name, String value) {
         if (value != null) {
             startConfig.addProperty(name, value);
@@ -244,5 +261,12 @@ public class ContainerHostConfig {
             startConfig.addProperty(name, value);
         }
         return this;
+    }
+
+    private Long convertToNanoCpus(Double cpus){
+        if(cpus == null){
+            return null;
+        }
+        return (long)(cpus * 1_000_000_000);
     }
 }

@@ -1,0 +1,115 @@
+
+[[build-buildx]]
+
+Buildx is enabled when there is a non-empty `<platform>` element inside the `<buildx>` configuration.
+
+The local image cache cannot hold multi-architecture images nor can it have two platform specific images of the same name.
+Thus the `build` goal will build and save a single-architecture image to the local image cache if possible:
+
+* If the `<platform>` element contains a single platform, that image will be built.
+* If the `<platform>` element contains more than one platform including the native platform, the native platform be used.
+* If the `<platform>` element contains more than one platform not including the native platform, no image will be built.
+
+These rules only apply to the image built and loaded into the local image cache with the `build` goal.  They do not apply to the
+`push` goal which will always build and push either a single-architecture or multi-architecture image with whatever platforms
+are specified in the `<platform>` element.
+
+The recommended `<buildx>` configuration is to specify all supported platforms, including the native platform, in the
+`<platform>` element.  This allows local integration testing of the build image from the local cache. During install or deploy
+phase, the build machine will build and push a multi-architecture image containing all specified platforms to the registry.
+Any downstream consumers, regardless of native architecture, will be able to use the multi-architecture image.
+
+The `<buildx>` element within `<build>` defines how to build multi-architecture images.
+
+[[config-image-build-assembly]]
+.BuildX Options
+[cols="1,5"]
+|===
+| Element | Description
+
+| *builderName*
+| Name of builder to use with buildx.  If not supplied, the builder is named `maven`.  The builder is created as necessary.
+The builder manages the build cache. Set to `default` to leverage the default buildx driver on local builds. This improves
+I/O performance, but will only work for the native platform.
+
+| *driverOpts*
+| Optional list of driverOpts to use with the builder. The driverOpts are passed to the builder when it is created.
+
+| *nodeName*
+| Specify the name of the node to be created or modified.
+
+| *configFile*
+| Configuration file for builder.  Non-absolute files are relative to the maven project directory.  If configFile starts with
+`~/`, the configuration file is relative to the user's home directory.
+
+| *dockerStateDir*
+| State directory for docker builder.  This directory holds docker builder configurations and context state. Sharing a state
+directory across builds will share the cache and will decrease pull times.
+Non-absolute files are relative to the maven project directory. If dockerConfigDir starts with `~/`, the configuration directory
+is relative to the user's home directory.
+
+| *platforms*
+| A list of `<platform>` elements specifying platform to build.  A platform has syntax of `OS/architecture` (e.g. linux/amd64,
+linux/arm64, darwin/amd64).  Each `<platform>` element may have a comma separated list of platforms.  Empty `<platform>`
+elements are ignored.  If no platform architecture is specified, buildx is *not* used.  You can use
+
+| *attestations*
+| The configuration of attestation modes.  The `<provenance>` element may be set to `min`,
+`max`, or `false`. The `<sbom>` element may be set to `true` or `false`. The `<provenance>`
+element defaults to `min` and the `<sbom>` element defaults to `false`.
+| *cacheFrom*
+| A value to be passed through to the `--cache-from` option of `docker buildx build`. See https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-from[docker buildx reference docs].
+| *cacheTo*
+| A value to be passed through to the `--cache-to` option of `docker buildx build`. See https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-to[docker buildx reference docs].
+| *buildAllPlatforms*
+| When `true` and more than one `<platform>` is configured, the `docker:build` goal builds *all*
+configured platforms (warming the builder cache) in addition to building and loading the native
+platform for local use / integration tests. This brings the cross-platform build work forward from
+`docker:push` to `docker:build` so that a later push (re)uses the cache. Since multi-platform images
+cannot be loaded into the docker daemon, the all-platforms build produces no output and only populates
+the cache. Defaults to `false`.
+| *secret*
+|This option enables to https://docs.docker.com/reference/cli/docker/buildx/build/#secret[pass secrets to buildx build] as `--secret id=ID[,[env\|src]=VALUE]`.
+For environment variables add a `<env>` element with a list of variables in the form `<secret name>env variable name</secret name>` (whereas the `secret name` can then be referenced in your Dockerfile.
+For files, add a `<files>` component with a list of paths to the files in the form `<secret name>path to file</secret name>`.
+Examples can be found in the https://github.com/kevinleturc/docker-maven-plugin/blob/bd805724111f7744a38d0b67f80f3e2d2a3e46d2/it/buildx-dockerfile-secret/pom.xml#L26[integration tests].
+NOTE: The `--target` option for multi-stage Dockerfiles is configured via the `<target>` element in the parent `<build>` section, not inside `<buildx>`. It applies to both the regular build path and buildx.
+
+|===
+
+.Examples
+The recommended configuration is setting a top level property with the list of platforms to build.
+
+[source,xml]
+----
+<properties>
+  <docker.platforms></docker.platforms>
+</properties>
+----
+
+Then in the image configuration, use the following;
+
+[source,xml]
+----
+<configuration>
+  <images>
+    <image>
+      <name>${project.groupId}.${project.artifactId}</name>
+      <build>
+        <buildx>
+          <platforms>
+            <platform>${docker.platforms}</platform>
+          </platforms>
+        </buildx>
+        <!-- add other configuration ... -->
+      </build>
+    </image>
+  </images>
+</configuration>
+----
+
+You can now override the built platforms using a command line define:
+[source,bash]
+----
+mvn clean deploy -Ddocker.platforms=linux/amd64,linux/arm64
+----

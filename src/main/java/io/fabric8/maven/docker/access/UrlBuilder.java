@@ -7,8 +7,10 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 import io.fabric8.maven.docker.util.ImageName;
 
@@ -51,17 +53,25 @@ public final class UrlBuilder {
     }
 
     public String containerLogs(String containerId, boolean follow) {
-        return u("containers/%s/logs", containerId)
+        return containerLogs(containerId, follow, null);
+    }
+
+    public String containerLogs(String containerId, boolean follow, String since) {
+        Builder builder = u("containers/%s/logs", containerId)
                 .p("stdout",true)
                 .p("stderr",true)
                 .p("timestamps", true)
-                .p("follow", follow)
-                .build();
+                .p("follow", follow);
+        if (since != null) {
+            builder.p("since", since);
+        }
+        return builder.build();
     }
 
-    public String createContainer(String name) {
+    public String createContainer(String name, String platform) {
         return u("containers/create")
                 .p("name", name)
+                .p("platform", platform)
                 .build();
     }
 
@@ -79,6 +89,12 @@ public final class UrlBuilder {
         return u("images/%s/get", name.getFullName())
             .build();
     }
+
+    public String getImages(List<ImageName> names) {
+        return u("images/get").p("names", names.stream().map(n -> n.getFullName()).collect(Collectors.toList()))
+                .build();
+    }
+
 
     public String inspectContainer(String containerId) {
         return u("containers/%s/json", containerId)
@@ -101,11 +117,12 @@ public final class UrlBuilder {
             .build();
     }
 
-    public String pullImage(ImageName name, String registry) {
-        return u("images/create")
-                .p("fromImage", name.getNameWithoutTag(registry))
-                .p("tag", name.getDigest() != null ? name.getDigest() : name.getTag())
-                .build();
+    public String pullImage(CreateImageOptions options) {
+        final Builder urlBuilder = u("images/create");
+        if (options != null) {
+            urlBuilder.p(options.getOptions());
+        }
+        return urlBuilder.build();
     }
 
     public String pushImage(ImageName name, String registry) {
@@ -242,6 +259,7 @@ public final class UrlBuilder {
     private static class Builder {
 
         private Map<String,String> queryParams = new HashMap<>();
+        private Map<String,List<String>> queryArrayParams = new HashMap<>();
         private String url;
 
         public Builder(String url) {
@@ -260,6 +278,13 @@ public final class UrlBuilder {
             return this;
         }
 
+        private Builder p(String key, List<String> values) {
+             if (values!=null && !values.isEmpty()) {
+                queryArrayParams.put(key, values);
+            }
+            return this;
+        }
+
         private Builder p(String key, boolean value) {
             return p(key,value ? "1" : "0");
         }
@@ -269,7 +294,7 @@ public final class UrlBuilder {
         }
 
         public String build() {
-            if (queryParams.size() > 0) {
+            if (queryParams.size() > 0 || queryArrayParams.size() > 0) {
                 StringBuilder ret = new StringBuilder(url);
                 ret.append("?");
                 // Sort to make order predictable e.g. for unit testing
@@ -278,6 +303,14 @@ public final class UrlBuilder {
                        .append("=")
                        .append(encode(queryParams.get(key)))
                        .append("&");
+                }
+                for (String key : new TreeSet<>(queryArrayParams.keySet())) {
+                    for(String value : queryArrayParams.get(key)){
+                        ret.append(key)
+                           .append("=")
+                           .append(encode(value))
+                           .append("&");
+                    }
                 }
                 return ret.substring(0,ret.length() - 1);
             } else {

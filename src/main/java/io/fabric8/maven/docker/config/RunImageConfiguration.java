@@ -18,10 +18,6 @@ public class RunImageConfiguration implements Serializable {
 
     static final RunImageConfiguration DEFAULT = new RunImageConfiguration();
 
-    public boolean isDefault() {
-        return this == RunImageConfiguration.DEFAULT;
-    }
-
     /**
      * Environment variables to set when starting the container. key: variable name, value: env value
      */
@@ -29,7 +25,7 @@ public class RunImageConfiguration implements Serializable {
     private Map<String, String> env;
 
     @Parameter
-    private Map<String,String> labels;
+    private Map<String, String> labels;
 
     // Path to a property file holding environment variables
     @Parameter
@@ -47,9 +43,21 @@ public class RunImageConfiguration implements Serializable {
     @Parameter
     private List<String> dependsOn;
 
-    // container entry point
+    // healthcheck
     @Parameter
+    private HealthCheckConfiguration healthCheckConfiguration;
+
+    /**
+     * container entry point
+     *
+     * @deprecated This field would be removed in upcoming releases. Use <code>entryPoint</code> instead.
+     */
+    @Parameter
+    @Deprecated
     private Arguments entrypoint;
+
+    @Parameter
+    private Arguments entryPoint;
 
     // container hostname
     @Parameter
@@ -59,12 +67,17 @@ public class RunImageConfiguration implements Serializable {
     @Parameter
     private String user;
 
+    @Parameter
+    private String userns;
+
     // working directory
     @Parameter
     private String workingDir;
 
     // Size of /dev/shm in bytes
-    /** @parameter */
+    /**
+     * @parameter
+     */
     private Long shmSize;
 
     // memory in bytes
@@ -99,6 +112,9 @@ public class RunImageConfiguration implements Serializable {
     private List<String> capDrop;
 
     @Parameter
+    private Map<String, String> sysctls;
+
+    @Parameter
     private List<String> securityOpts;
 
     @Parameter
@@ -114,7 +130,7 @@ public class RunImageConfiguration implements Serializable {
     private Long cpuShares;
 
     @Parameter
-    private Long cpus;
+    private Double cpus;
 
     @Parameter
     private String cpuSet;
@@ -133,12 +149,11 @@ public class RunImageConfiguration implements Serializable {
 
     /**
      * A pattern to define the naming of the container where
-     *
+     * <p>
      * - %a for the "alias" mode
      * - %n for the image name
      * - %t for a timestamp
      * - %i for an increasing index of container names
-     *
      */
     @Parameter
     private String containerNamePattern;
@@ -176,12 +191,18 @@ public class RunImageConfiguration implements Serializable {
 
     @Parameter
     private Boolean skip;
-    
+
     /**
      * Policy for pulling the image to start
      */
     @Parameter
     private String imagePullPolicy;
+
+    /**
+     * Use explicit platform
+     */
+    @Parameter
+    private String platform;
 
     // Mount the container's root filesystem as read only
     @Parameter
@@ -195,11 +216,15 @@ public class RunImageConfiguration implements Serializable {
     @Parameter
     private StopMode stopMode;
 
-    public RunImageConfiguration() { }
+    public RunImageConfiguration() {
+    }
 
     public String initAndValidate() {
         if (entrypoint != null) {
             entrypoint.validate();
+        }
+        if (entryPoint != null) {
+            entryPoint.validate();
         }
         if (cmd != null) {
             cmd.validate();
@@ -227,7 +252,10 @@ public class RunImageConfiguration implements Serializable {
     }
 
     public Arguments getEntrypoint() {
-        return entrypoint;
+        if (entrypoint != null) {
+            return entrypoint;
+        }
+        return entryPoint;
     }
 
     public String getHostname() {
@@ -241,6 +269,10 @@ public class RunImageConfiguration implements Serializable {
     @Nonnull
     public List<String> getDependsOn() {
         return EnvUtil.splitAtCommasAndTrim(dependsOn);
+    }
+
+    public HealthCheckConfiguration getHealthCheckConfiguration() {
+        return healthCheckConfiguration;
     }
 
     public String getUser() {
@@ -259,13 +291,15 @@ public class RunImageConfiguration implements Serializable {
         return memorySwap;
     }
 
-    public String getIsolation() { return isolation; }
+    public String getIsolation() {
+        return isolation;
+    }
 
     public Long getCpuShares() {
         return cpuShares;
     }
 
-    public Long getCpus() {
+    public Double getCpus() {
         return cpus;
     }
 
@@ -304,6 +338,10 @@ public class RunImageConfiguration implements Serializable {
 
     public List<String> getCapDrop() {
         return capDrop;
+    }
+
+    public Map<String, String> getSysctls() {
+        return sysctls;
     }
 
     public List<String> getSecurityOpts() {
@@ -398,6 +436,10 @@ public class RunImageConfiguration implements Serializable {
         return imagePullPolicy;
     }
 
+    public String getPlatform() {
+        return platform;
+    }
+
     public String getContainerNamePattern() {
         return containerNamePattern;
     }
@@ -408,6 +450,10 @@ public class RunImageConfiguration implements Serializable {
 
     public Boolean getAutoRemove() {
         return autoRemove;
+    }
+
+    public String getUserns() {
+        return userns;
     }
 
     public StopMode getStopMode() {
@@ -453,7 +499,6 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
-
         public Builder envPropertyFile(String envPropertyFile) {
             config.envPropertyFile = envPropertyFile;
             return this;
@@ -478,6 +523,7 @@ public class RunImageConfiguration implements Serializable {
 
         public Builder entrypoint(Arguments args) {
             config.entrypoint = args;
+            config.entryPoint = args;
             return this;
         }
 
@@ -526,6 +572,11 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder sysctls(Map<String, String> sysctls) {
+            config.sysctls = sysctls;
+            return this;
+        }
+
         public Builder securityOpts(List<String> securityOpts) {
             config.securityOpts = securityOpts;
             return this;
@@ -543,6 +594,11 @@ public class RunImageConfiguration implements Serializable {
 
         public Builder dependsOn(List<String> dependsOn) {
             config.dependsOn = dependsOn;
+            return this;
+        }
+
+        public Builder healthcheck(HealthCheckConfiguration healthCheckConfiguration) {
+            config.healthCheckConfiguration = healthCheckConfiguration;
             return this;
         }
 
@@ -596,22 +652,22 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
-        public Builder isolation (String isolation) {
+        public Builder isolation(String isolation) {
             config.isolation = isolation;
             return this;
         }
 
-        public Builder cpuShares(Long cpuShares){
+        public Builder cpuShares(Long cpuShares) {
             config.cpuShares = cpuShares;
             return this;
         }
 
-        public Builder cpus(Long cpus){
+        public Builder cpus(Double cpus) {
             config.cpus = cpus;
             return this;
         }
 
-        public Builder cpuSet(String cpuSet){
+        public Builder cpuSet(String cpuSet) {
             config.cpuSet = cpuSet;
             return this;
         }
@@ -627,8 +683,8 @@ public class RunImageConfiguration implements Serializable {
         @Deprecated
         public Builder namingStrategy(String namingStrategy) {
             config.namingStrategy = namingStrategy == null ?
-                    NamingStrategy.none :
-                    NamingStrategy.valueOf(namingStrategy.toLowerCase());
+                NamingStrategy.none :
+                NamingStrategy.valueOf(namingStrategy.toLowerCase());
             return this;
         }
 
@@ -673,6 +729,13 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder platform(String platform) {
+            if (platform != null) {
+                config.platform = platform;
+            }
+            return this;
+        }
+
         public Builder readOnly(Boolean readOnly) {
             config.readOnly = readOnly;
             return this;
@@ -680,6 +743,11 @@ public class RunImageConfiguration implements Serializable {
 
         public Builder autoRemove(Boolean autoRemove) {
             config.autoRemove = autoRemove;
+            return this;
+        }
+        
+        public Builder userns(String userns) {
+            config.userns = userns;
             return this;
         }
 

@@ -16,207 +16,228 @@ package io.fabric8.maven.docker.config;
  * limitations under the License.
  */
 
+import io.fabric8.maven.docker.util.Logger;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
-
-import io.fabric8.maven.docker.util.Logger;
-import mockit.Expectations;
-import mockit.Mocked;
-import org.junit.Test;
+import java.util.HashMap;
+import java.util.Map;
 
 import static io.fabric8.maven.docker.config.ArchiveCompression.gzip;
 import static io.fabric8.maven.docker.config.ArchiveCompression.none;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * @author roland
  * @since 04/04/16
  */
 
-public class BuildImageConfigurationTest {
+@ExtendWith(MockitoExtension.class)
+class BuildImageConfigurationTest {
 
-    @Mocked
+    @Mock
     Logger logger;
 
     @Test
-    public void empty() {
+    void empty() {
         BuildImageConfiguration config = new BuildImageConfiguration();
         config.initAndValidate(logger);
-        assertFalse(config.isDockerFileMode());
+        Assertions.assertFalse(config.isDockerFileMode());
     }
 
     @Test
-    public void simpleDockerfile() {
+    // Tests fix for #1858: a build arg whose value resolves to an empty/undefined property is
+    // injected as null and must be normalized to an empty string instead of failing the build
+    void buildArgWithNullValueIsNormalizedToEmptyString() {
+        Map<String, String> args = new HashMap<>();
+        args.put("EMPTY_ARG", null);
+        args.put("REAL_ARG", "value");
+        BuildImageConfiguration config =
+            new BuildImageConfiguration.Builder().args(args).build();
+
+        config.initAndValidate(logger);
+
+        Assertions.assertEquals("", config.getArgs().get("EMPTY_ARG"));
+        Assertions.assertEquals("value", config.getArgs().get("REAL_ARG"));
+    }
+
+    @Test
+    void simpleDockerfile() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerFile("src/main/docker/Dockerfile").build();
         config.initAndValidate(logger);
-        assertTrue(config.isDockerFileMode());
-        assertEquals(config.getDockerFile(),new File("src/main/docker/Dockerfile"));
-        assertEquals(config.getContextDir(),new File("src/main/docker"));
+        Assertions.assertTrue(config.isDockerFileMode());
+        Assertions.assertEquals(config.getDockerFile(), new File("src/main/docker/Dockerfile"));
+        Assertions.assertEquals(config.getContextDir(), new File("src/main/docker"));
     }
 
     @Test
-    // Tests fix for #1200
-    public void simpleDockerfileWithoutParentDir() {
+        // Tests fix for #1200
+    void simpleDockerfileWithoutParentDir() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerFile("Dockerfile").build();
         config.initAndValidate(logger);
-        assertTrue(config.isDockerFileMode());
-        assertEquals(config.getDockerFile(),new File("Dockerfile"));
-        assertEquals(config.getContextDir(), new File(""));
+        Assertions.assertTrue(config.isDockerFileMode());
+        Assertions.assertEquals(config.getDockerFile(), new File("Dockerfile"));
+        Assertions.assertEquals(config.getContextDir(), new File(""));
     }
 
-
     @Test
-    public void simpleDockerfileDir() {
+    void simpleDockerfileDir() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerFileDir("src/docker/").build();
         config.initAndValidate(logger);
-        assertTrue(config.isDockerFileMode());
-        assertEquals(config.getDockerFile(),new File("src/docker/Dockerfile"));
-        assertFalse(config.getContextDir().isAbsolute());
+        Assertions.assertTrue(config.isDockerFileMode());
+        Assertions.assertEquals(config.getDockerFile(), new File("src/docker/Dockerfile"));
+        Assertions.assertFalse(config.getContextDir().isAbsolute());
     }
 
     @Test
-    public void DockerfileDirAndDockerfileAlsoSet() {
+    void DockerfileDirAndDockerfileAlsoSet() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerFileDir("/tmp/").
                 dockerFile("Dockerfile").build();
         config.initAndValidate(logger);
-        assertTrue(config.isDockerFileMode());
-        assertEquals(config.getDockerFile(),new File("/tmp/Dockerfile"));
+        Assertions.assertTrue(config.isDockerFileMode());
+        Assertions.assertEquals(config.getDockerFile(), new File("/tmp/Dockerfile"));
     }
 
-    @Test(expected=IllegalArgumentException.class)
-    public void DockerfileDirAndDockerfileAlsoSetButDockerfileIsAbsoluteExceptionThrown() {
+    @Test
+    void DockerfileDirAndDockerfileAlsoSetButDockerfileIsAbsoluteExceptionThrown() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerFileDir("/tmp/").
                 dockerFile(new File("Dockerfile").getAbsolutePath()).build();
-        config.initAndValidate(logger);
+        Assertions.assertThrows(IllegalArgumentException.class, () -> config.initAndValidate(logger));
     }
 
     @Test
-    public void contextDir() {
+    void contextDir() {
         BuildImageConfiguration config =
-                new BuildImageConfiguration.Builder().
-                        contextDir("target").build();
+            new BuildImageConfiguration.Builder().
+                contextDir("target").build();
         config.initAndValidate(logger);
-        assertEquals(new File("target"), config.getContextDir());
+        Assertions.assertEquals(new File("target"), config.getContextDir());
     }
 
     @Test
-    public void contextDirAndDockerfile() {
+    void contextDirAndDockerfile() {
         BuildImageConfiguration config =
-                new BuildImageConfiguration.Builder().
-                        dockerFile("src/docker/Dockerfile").
-                        contextDir("target").build();
+            new BuildImageConfiguration.Builder().
+                dockerFile("src/docker/Dockerfile").
+                contextDir("target").build();
         config.initAndValidate(logger);
-        assertEquals(new File("target/src/docker/Dockerfile"), config.getDockerFile());
-        assertEquals(new File("target"), config.getContextDir());
+        Assertions.assertEquals(new File("target/src/docker/Dockerfile"), config.getDockerFile());
+        Assertions.assertEquals(new File("target"), config.getContextDir());
     }
 
     @Test
-    public void contextDirAndDockerfileDir() {
+    void contextDirAndDockerfileDir() {
         BuildImageConfiguration config =
-                new BuildImageConfiguration.Builder().
-                        dockerFileDir("src/docker").
-                        contextDir("target").build();
+            new BuildImageConfiguration.Builder().
+                dockerFileDir("src/docker").
+                contextDir("target").build();
         config.initAndValidate(logger);
-        assertEquals(new File("target/Dockerfile"), config.getDockerFile());
-        assertEquals(new File("target"), config.getContextDir());
+        Assertions.assertEquals(new File("target/Dockerfile"), config.getDockerFile());
+        Assertions.assertEquals(new File("target"), config.getContextDir());
     }
 
     @Test
-    public void contextDirAndAbsoluteDockerfile() throws IOException {
+    void contextDirAndAbsoluteDockerfile() throws IOException {
         File tempDockerFile = File.createTempFile("Dockerfile", "");
         tempDockerFile.deleteOnExit();
         BuildImageConfiguration config = new BuildImageConfiguration.Builder()
-                .dockerFile(tempDockerFile.getAbsolutePath())
-                .contextDir("target")
-                .build();
+            .dockerFile(tempDockerFile.getAbsolutePath())
+            .contextDir("target")
+            .build();
 
         // If contextDir is given and the dockerFile is an absolute path.
         // The Dockerfile should then be copied over.
         config.initAndValidate(logger);
-        assertEquals(new File(tempDockerFile.getAbsolutePath()), config.getDockerFile());
-        assertEquals(new File("target"), config.getContextDir());
+        Assertions.assertEquals(new File(tempDockerFile.getAbsolutePath()), config.getDockerFile());
+        Assertions.assertEquals(new File("target"), config.getContextDir());
     }
 
     @Test
-    public void deprecatedDockerfileDir() {
+    void deprecatedDockerfileDir() {
         AssemblyConfiguration assemblyConfig = new AssemblyConfiguration.Builder().dockerFileDir("src/docker").build();
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 assembly(assemblyConfig).build();
 
-        new Expectations() {{
-            logger.warn(withSubstring("deprecated"));
-        }};
-
         config.initAndValidate(logger);
-        assertTrue(config.isDockerFileMode());
-        assertEquals(config.getDockerFile(),new File("src/docker/Dockerfile"));
+        Assertions.assertTrue(config.isDockerFileMode());
+        Assertions.assertEquals(config.getDockerFile(), new File("src/docker/Dockerfile"));
+
+        ArgumentCaptor<String> formatCaptor = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(logger, Mockito.times(2)).warn(formatCaptor.capture());
+        Assertions.assertTrue(formatCaptor.getAllValues().get(0).contains("deprecated"));
     }
 
     @Test
-    public void dockerFileAndArchive() {
+    void dockerFileAndArchive() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerArchive("this").
                 dockerFile("that").build();
 
-        try {
-            config.initAndValidate(logger);
-        } catch (IllegalArgumentException expected) {
-            return;
-        }
-        fail("Should have failed.");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> config.initAndValidate(logger));
     }
 
     @Test
-    public void dockerArchive() {
+    void dockerArchive() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 dockerArchive("this").build();
         config.initAndValidate(logger);
 
-        assertFalse(config.isDockerFileMode());
-        assertEquals(new File("this"), config.getDockerArchive());
+        Assertions.assertFalse(config.isDockerFileMode());
+        Assertions.assertEquals(new File("this"), config.getDockerArchive());
     }
 
     @Test
-    public void compression() {
+    void compression() {
         BuildImageConfiguration config =
             new BuildImageConfiguration.Builder().
                 compression("gzip").build();
-        assertEquals(gzip, config.getCompression());
+        Assertions.assertEquals(gzip, config.getCompression());
 
         config = new BuildImageConfiguration.Builder().build();
-        assertEquals(none, config.getCompression());
+        Assertions.assertEquals(none, config.getCompression());
 
         config =
             new BuildImageConfiguration.Builder().
                 compression(null).build();
-        assertEquals(none, config.getCompression());
+        Assertions.assertEquals(none, config.getCompression());
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void multipleAssembliesUniqueNames() {
+    @Test
+    void multipleAssembliesUniqueNames() {
         AssemblyConfiguration assemblyConfigurationOne = new AssemblyConfiguration.Builder().name("foo").build();
         AssemblyConfiguration assemblyConfigurationTwo = new AssemblyConfiguration.Builder().name("foo").build();
         BuildImageConfiguration config =
-                new BuildImageConfiguration.Builder().
-                        assemblies(Arrays.asList(assemblyConfigurationOne, assemblyConfigurationTwo)).build();
+            new BuildImageConfiguration.Builder().
+                assemblies(Arrays.asList(assemblyConfigurationOne, assemblyConfigurationTwo)).build();
+        Assertions.assertThrows(IllegalArgumentException.class, () -> config.initAndValidate(logger));
+    }
 
+    @Test
+    void skipTag() {
+        BuildImageConfiguration config =
+                new BuildImageConfiguration.Builder().skipTag(true)
+                        .build();
         config.initAndValidate(logger);
+        Assertions.assertTrue(config.skipTag());
     }
 }

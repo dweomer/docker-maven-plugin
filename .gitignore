@@ -1,7 +1,9 @@
 .idea/
 .DS_Store
 target/
+*.bak
 *.iml
+*.log
 .classpath
 .project
 .settings

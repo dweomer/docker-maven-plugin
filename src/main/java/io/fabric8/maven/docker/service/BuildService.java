@@ -1,22 +1,7 @@
 package io.fabric8.maven.docker.service;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.Serializable;
-import java.nio.file.Files;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.regex.PatternSyntaxException;
-
-import org.apache.maven.plugin.MojoExecutionException;
 import com.google.common.collect.ImmutableMap;
-import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
-
 import io.fabric8.maven.docker.access.BuildOptions;
 import io.fabric8.maven.docker.access.DockerAccess;
 import io.fabric8.maven.docker.access.DockerAccessException;
@@ -24,9 +9,11 @@ import io.fabric8.maven.docker.assembly.DockerAssemblyManager;
 import io.fabric8.maven.docker.config.AssemblyConfiguration;
 import io.fabric8.maven.docker.config.BuildImageConfiguration;
 import io.fabric8.maven.docker.config.CleanupMode;
+import io.fabric8.maven.docker.config.ConfigHelper;
 import io.fabric8.maven.docker.config.ImageConfiguration;
 import io.fabric8.maven.docker.model.ImageArchiveManifest;
 import io.fabric8.maven.docker.model.ImageArchiveManifestEntry;
+import io.fabric8.maven.docker.service.helper.BuildArgResolver;
 import io.fabric8.maven.docker.util.DockerFileUtil;
 import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.ImageArchiveUtil;
@@ -34,11 +21,20 @@ import io.fabric8.maven.docker.util.ImageName;
 import io.fabric8.maven.docker.util.Logger;
 import io.fabric8.maven.docker.util.MojoParameters;
 import io.fabric8.maven.docker.util.NamePatternUtil;
+import org.apache.maven.plugin.MojoExecutionException;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.Serializable;
+import java.nio.file.Files;
+import java.util.Collections;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.regex.PatternSyntaxException;
 
 public class BuildService {
-
-    private final String argPrefix = "docker.buildArg.";
-
     private final DockerAccess docker;
     private final QueryService queryService;
     private final ArchiveService archiveService;
@@ -56,7 +52,7 @@ public class BuildService {
     /**
      * Pull the base image if needed and run the build.
      *
-     * @param imageConfig the image configuration
+     * @param imageConfig  the image configuration
      * @param buildContext the build context
      * @throws DockerAccessException
      * @throws MojoExecutionException
@@ -64,20 +60,23 @@ public class BuildService {
     public void buildImage(ImageConfiguration imageConfig, ImagePullManager imagePullManager, BuildContext buildContext, File buildArchiveFile)
             throws DockerAccessException, MojoExecutionException {
 
+        BuildArgResolver buildArgResolver = new BuildArgResolver(log);
+        Map<String, String> buildArgsFromExternalSources = buildArgResolver.resolveBuildArgs(buildContext);
         if (imagePullManager != null) {
-            autoPullBaseImage(imageConfig, imagePullManager, buildContext);
+            autoPullBaseImage(imageConfig, imagePullManager, buildContext, prepareBuildArgs(buildArgsFromExternalSources, imageConfig.getBuildConfiguration()));
+            autoPullCacheFromImage(imageConfig, imagePullManager, buildContext);
         }
 
-        buildImage(imageConfig, buildContext.getMojoParameters(), checkForNocache(imageConfig), checkForSquash(imageConfig), addBuildArgs(buildContext), buildArchiveFile);
+        buildImage(imageConfig, buildContext.getMojoParameters(), ConfigHelper.isNoCache(imageConfig), checkForSquash(imageConfig), buildArgsFromExternalSources, buildArchiveFile);
     }
 
     /**
      * Create docker archive for building image
      *
      * @param imageConfiguration image configuration
-     * @param buildContext docker build context
-     * @param archivePath build archive only flag, it can have values TRUE or FALSE and also
-     *                               it can hold path to archive where it might get copied over
+     * @param buildContext       docker build context
+     * @param archivePath        build archive only flag, it can have values TRUE or FALSE and also
+     *                           it can hold path to archive where it might get copied over
      * @return tarball for docker image
      * @throws MojoExecutionException in case any exception comes during building tarball
      */
@@ -114,14 +113,15 @@ public class BuildService {
     }
 
     public void tagImage(ImageConfiguration imageConfig) throws DockerAccessException {
-
         List<String> tags = imageConfig.getBuildConfiguration().getTags();
         if (!tags.isEmpty()) {
             String imageName = imageConfig.getName();
-            log.info("%s: Tag with %s", imageConfig.getDescription(), EnvUtil.stringJoin(tags, ","));
+            log.info("%s: Tag with %s", imageConfig.getDescription(), String.join(",", tags));
+
+            BuildImageConfiguration buildConfig = imageConfig.getBuildConfiguration();
 
             for (String tag : tags) {
-                tagImage(imageName, tag, null);
+                tagImage(imageName, tag, null, buildConfig.cleanupMode());
             }
         }
     }
@@ -130,9 +130,9 @@ public class BuildService {
      * Build an image
      *
      * @param imageConfig the image configuration
-     * @param params mojo params for the project
-     * @param noCache if not null, dictate the caching behaviour. Otherwise its taken from the build configuration
-     * @param buildArgs docker build args
+     * @param params      mojo params for the project
+     * @param noCache     if not null, dictate the caching behaviour. Otherwise its taken from the build configuration
+     * @param buildArgs   docker build args
      * @throws DockerAccessException
      * @throws MojoExecutionException
      */
@@ -160,7 +160,7 @@ public class BuildService {
             docker.loadImage(imageName, tarArchive);
             log.info("%s: Loaded tarball in %s", buildConfig.getDockerArchive(), EnvUtil.formatDurationTill(time));
 
-            if(archiveImageName != null && !archiveImageName.equals(imageName)) {
+            if (archiveImageName != null && !archiveImageName.equals(imageName)) {
                 docker.tag(archiveImageName, imageName, true);
             }
 
@@ -172,41 +172,40 @@ public class BuildService {
         // auto is now supported by docker, consider switching?
         BuildOptions opts =
                 new BuildOptions(buildConfig.getBuildOptions())
-                        .dockerfile(getDockerfileName(buildConfig))
+                        .dockerfile(buildConfig.getDockerfileName())
                         .forceRemove(cleanupMode.isRemove())
                         .noCache(noCache)
                         .squash(squash)
                         .cacheFrom(buildConfig.getCacheFrom())
                         .network(buildConfig.getNetwork())
+                        .target(buildConfig.getTarget())
                         .buildArgs(mergedBuildMap);
         String newImageId = doBuildImage(imageName, dockerArchive, opts);
         log.info("%s: Built image %s", imageConfig.getDescription(), newImageId);
 
-        if (oldImageId != null && !oldImageId.equals(newImageId)) {
-            try {
-                docker.removeImage(oldImageId, true);
-                log.info("%s: Removed old image %s", imageConfig.getDescription(), oldImageId);
-            } catch (DockerAccessException exp) {
-                if (cleanupMode == CleanupMode.TRY_TO_REMOVE) {
-                    log.warn("%s: %s (old image)%s", imageConfig.getDescription(), exp.getMessage(),
-                            (exp.getCause() != null ? " [" + exp.getCause().getMessage() + "]" : ""));
-                } else {
-                    throw exp;
-                }
-            }
-        }
+        removeDanglingImage(imageName, oldImageId, newImageId, cleanupMode, true);
     }
 
-    public void tagImage(String imageName, String tag, String repo) throws DockerAccessException {
+    public void tagImage(String imageName, String tag, String repo, CleanupMode cleanupMode) throws DockerAccessException {
         if (tag != null) {
             String fullImageName = new ImageName(imageName, tag).getNameWithOptionalRepository(repo);
+
+            String oldImageId = null;
+            if (cleanupMode.isRemove()) {
+                oldImageId = queryService.getImageId(fullImageName);
+            }
+
             docker.tag(imageName, fullImageName, true);
             log.info("Tagging image %s successful!", fullImageName);
+
+            String newImageId = queryService.getImageId(fullImageName);
+
+            removeDanglingImage(fullImageName, oldImageId, newImageId, cleanupMode, false);
         }
     }
 
-    private Map<String, String> prepareBuildArgs(Map<String, String> buildArgs, BuildImageConfiguration buildConfig) {
-        ImmutableMap.Builder<String, String> builder = ImmutableMap.<String, String>builder().putAll(buildArgs);
+    static Map<String, String> prepareBuildArgs(Map<String, String> buildArgs, BuildImageConfiguration buildConfig) {
+        ImmutableMap.Builder<String, String> builder = ImmutableMap.<String, String>builder().putAll(Optional.ofNullable(buildArgs).orElse(Collections.emptyMap()));
         if (buildConfig.getArgs() != null) {
             builder.putAll(buildConfig.getArgs());
         }
@@ -214,7 +213,7 @@ public class BuildService {
     }
 
     private String getArchiveImageName(BuildImageConfiguration buildConfig, File tarArchive) throws MojoExecutionException {
-        if(buildConfig.getLoadNamePattern() == null || buildConfig.getLoadNamePattern().length() == 0) {
+        if (buildConfig.getLoadNamePattern() == null || buildConfig.getLoadNamePattern().length() == 0) {
             return null;
         }
 
@@ -229,11 +228,11 @@ public class BuildService {
 
         try {
             archiveImageName = matchArchiveImagesToPattern(buildConfig.getLoadNamePattern(), manifest);
-        } catch(PatternSyntaxException e) {
+        } catch (PatternSyntaxException e) {
             throw new MojoExecutionException("Unable to interpret loadNamePattern " + buildConfig.getLoadNamePattern(), e);
         }
 
-        if(archiveImageName == null) {
+        if (archiveImageName == null) {
             throw new MojoExecutionException("No image in the archive has a tag that matches pattern " + buildConfig.getLoadNamePattern());
         }
 
@@ -248,10 +247,10 @@ public class BuildService {
         log.info("%s: Read archive manifest in %s", tarArchive, EnvUtil.formatDurationTill(time));
 
         // Show the results of reading the manifest to users trying to debug their configuration
-        if(log.isDebugEnabled()) {
-            for(ImageArchiveManifestEntry entry : manifest.getEntries()) {
+        if (log.isDebugEnabled()) {
+            for (ImageArchiveManifestEntry entry : manifest.getEntries()) {
                 log.debug("Entry ID: %s has %d repo tag(s)", entry.getId(), entry.getRepoTags().size());
-                for(String repoTag : entry.getRepoTags()) {
+                for (String repoTag : entry.getRepoTags()) {
                     log.debug("Repo Tag: %s", repoTag);
                 }
             }
@@ -267,16 +266,16 @@ public class BuildService {
         Map<String, ImageArchiveManifestEntry> entries = ImageArchiveUtil.findEntriesByRepoTagPattern(imageNameRegex, manifest);
 
         // Show the matches from the manifest to users trying to debug their configuration
-        if(log.isDebugEnabled()) {
-            for(Map.Entry<String, ImageArchiveManifestEntry> entry : entries.entrySet()) {
+        if (log.isDebugEnabled()) {
+            for (Map.Entry<String, ImageArchiveManifestEntry> entry : entries.entrySet()) {
                 log.debug("Repo tag pattern matched %s referring to image %s", entry.getKey(), entry.getValue().getId());
             }
         }
 
-        if(!entries.isEmpty()) {
+        if (!entries.isEmpty()) {
             Map.Entry<String, ImageArchiveManifestEntry> matchedEntry = entries.entrySet().iterator().next();
 
-            if(ImageArchiveUtil.mapEntriesById(entries.values()).size() > 1) {
+            if (ImageArchiveUtil.mapEntriesById(entries.values()).size() > 1) {
                 log.warn("Multiple image ids matched pattern %s: using tag %s associated with id %s",
                         imageNamePattern, matchedEntry.getKey(), matchedEntry.getValue().getId());
             } else {
@@ -289,82 +288,18 @@ public class BuildService {
         return null;
     }
 
-    private String getDockerfileName(BuildImageConfiguration buildConfig) {
-        if (buildConfig.isDockerFileMode()) {
-            return buildConfig.getDockerFile().getName();
-        } else {
-            return null;
-        }
-    }
-
     private String doBuildImage(String imageName, File dockerArchive, BuildOptions options)
             throws DockerAccessException, MojoExecutionException {
         docker.buildImage(imageName, dockerArchive, options);
         return queryService.getImageId(imageName);
     }
 
-    private Map<String, String> addBuildArgs(BuildContext buildContext) {
-        Map<String, String> buildArgsFromProject = addBuildArgsFromProperties(buildContext.getMojoParameters().getProject().getProperties());
-        Map<String, String> buildArgsFromSystem = addBuildArgsFromProperties(System.getProperties());
-        Map<String, String> buildArgsFromDockerConfig = addBuildArgsFromDockerConfig();
-        return ImmutableMap.<String, String>builder()
-                .putAll(buildArgsFromDockerConfig)
-                .putAll(buildContext.getBuildArgs() != null ? buildContext.getBuildArgs() : Collections.<String, String>emptyMap())
-                .putAll(buildArgsFromProject)
-                .putAll(buildArgsFromSystem)
-                .build();
-    }
 
-    private Map<String, String> addBuildArgsFromProperties(Properties properties) {
-        Map<String, String> buildArgs = new HashMap<>();
-        for (Object keyObj : properties.keySet()) {
-            String key = (String) keyObj;
-            if (key.startsWith(argPrefix)) {
-                String argKey = key.replaceFirst(argPrefix, "");
-                String value = properties.getProperty(key);
 
-                if (!isEmpty(value)) {
-                    buildArgs.put(argKey, value);
-                }
-            }
-        }
-        log.debug("Build args set %s", buildArgs);
-        return buildArgs;
-    }
-
-    private Map<String, String> addBuildArgsFromDockerConfig() {
-        JsonObject dockerConfig = DockerFileUtil.readDockerConfig();
-        if (dockerConfig == null) {
-            return Collections.emptyMap();
-        }
-
-        // add proxies
-        Map<String, String> buildArgs = new HashMap<>();
-        if (dockerConfig.has("proxies")) {
-            JsonObject proxies = dockerConfig.getAsJsonObject("proxies");
-            if (proxies.has("default")) {
-                JsonObject defaultProxyObj = proxies.getAsJsonObject("default");
-                String[] proxyMapping = new String[] {
-                        "httpProxy", "http_proxy",
-                        "httpsProxy", "https_proxy",
-                        "noProxy", "no_proxy",
-                        "ftpProxy", "ftp_proxy"
-                };
-
-                for(int index = 0; index < proxyMapping.length; index += 2) {
-                    if (defaultProxyObj.has(proxyMapping[index])) {
-                        buildArgs.put(proxyMapping[index+1], defaultProxyObj.get(proxyMapping[index]).getAsString());
-                    }
-                }
-            }
-        }
-        log.debug("Build args set %s", buildArgs);
-        return buildArgs;
-    }
-
-    private void autoPullBaseImage(ImageConfiguration imageConfig, ImagePullManager imagePullManager, BuildContext buildContext)
+    private void autoPullBaseImage(ImageConfiguration imageConfig, ImagePullManager imagePullManager, BuildContext buildContext, Map<String, String> buildArgs)
             throws DockerAccessException, MojoExecutionException {
         BuildImageConfiguration buildConfig = imageConfig.getBuildConfiguration();
+        CleanupMode cleanupMode = buildConfig.cleanupMode();
 
         if (buildConfig.getDockerArchive() != null) {
             // No auto pull needed in archive mode
@@ -373,18 +308,53 @@ public class BuildService {
 
         List<String> fromImages;
         if (buildConfig.isDockerFileMode()) {
-            fromImages = extractBaseFromDockerfile(buildConfig, buildContext);
+            fromImages = extractBaseFromDockerfile(buildConfig, buildContext.getMojoParameters(), buildArgs);
         } else {
             fromImages = new LinkedList<>();
             String baseImage = extractBaseFromConfiguration(buildConfig);
-            if (baseImage!=null) {
-                fromImages.add(extractBaseFromConfiguration(buildConfig));
+            if (baseImage != null) {
+                fromImages.add(baseImage);
             }
         }
         for (String fromImage : fromImages) {
             if (fromImage != null && !DockerAssemblyManager.SCRATCH_IMAGE.equals(fromImage)) {
-                registryService.pullImageWithPolicy(fromImage, imagePullManager, buildContext.getRegistryConfig(), queryService.hasImage(fromImage));
+                String oldImageId = null;
+                if (cleanupMode.isRemove()) {
+                    oldImageId = queryService.getImageId(fromImage);
+                }
+
+                registryService.pullImageWithPolicy(fromImage, imagePullManager, buildContext.getRegistryConfig(), buildConfig);
+
+                String newImageId = queryService.getImageId(fromImage);
+
+                removeDanglingImage(fromImage, oldImageId, newImageId, cleanupMode, false);
             }
+        }
+    }
+
+    private void autoPullCacheFromImage(ImageConfiguration imageConfig, ImagePullManager imagePullManager, BuildContext buildContext) throws DockerAccessException, MojoExecutionException {
+        if (imageConfig.getBuildConfiguration().getCacheFrom() == null) {
+            return;
+        }
+
+        BuildImageConfiguration buildConfig = imageConfig.getBuildConfiguration();
+        CleanupMode cleanupMode = buildConfig.cleanupMode();
+
+        for (String cacheFromImage : buildConfig.getCacheFrom()) {
+            String oldImageId = null;
+            if (cleanupMode.isRemove()) {
+                oldImageId = queryService.getImageId(cacheFromImage);
+            }
+
+            try {
+                registryService.pullImageWithPolicy(cacheFromImage, imagePullManager, buildContext.getRegistryConfig(), buildConfig);
+            } catch (DockerAccessException e) {
+                log.warn("Could not pull cacheFrom image: '%s'. Reason: %s", cacheFromImage, e.getMessage());
+            }
+
+            String newImageId = queryService.getImageId(cacheFromImage);
+
+            removeDanglingImage(cacheFromImage, oldImageId, newImageId, cleanupMode, false);
         }
     }
 
@@ -392,7 +362,7 @@ public class BuildService {
         String fromImage;
         fromImage = buildConfig.getFrom();
         if (fromImage == null) {
-            List<AssemblyConfiguration> assemblyConfig = buildConfig.getAssemblyConfigurations();
+            List<AssemblyConfiguration> assemblyConfig = buildConfig.getAllAssemblyConfigurations();
             if (assemblyConfig.isEmpty()) {
                 fromImage = DockerAssemblyManager.DEFAULT_DATA_BASE_IMAGE;
             }
@@ -400,14 +370,21 @@ public class BuildService {
         return fromImage;
     }
 
-    private List<String> extractBaseFromDockerfile(BuildImageConfiguration buildConfig, BuildContext buildContext) {
+    static List<String> extractBaseFromDockerfile(BuildImageConfiguration buildConfig, MojoParameters mojoParameters, Map<String, String> buildArgs) {
+        if (buildConfig.getDockerFile() == null || !buildConfig.getAbsoluteDockerFilePath(mojoParameters).exists()) {
+            if (buildConfig.getFrom() != null && !buildConfig.getFrom().isEmpty()) {
+                return Collections.singletonList(buildConfig.getFrom());
+            }
+            return Collections.emptyList();
+        }
+
         List<String> fromImage;
         try {
-            File fullDockerFilePath = buildConfig.getAbsoluteDockerFilePath(buildContext.getMojoParameters());
+            File fullDockerFilePath = buildConfig.getAbsoluteDockerFilePath(mojoParameters);
             fromImage = DockerFileUtil.extractBaseImages(
-                fullDockerFilePath,
-                DockerFileUtil.createInterpolator(buildContext.getMojoParameters(), buildConfig.getFilter()),
-                buildConfig.getArgs());
+                    fullDockerFilePath,
+                    DockerFileUtil.createInterpolator(mojoParameters, buildConfig.getFilter()),
+                    buildArgs);
         } catch (IOException e) {
             // Cant extract base image, so we wont try an auto pull. An error will occur later anyway when
             // building the image, so we are passive here.
@@ -416,18 +393,38 @@ public class BuildService {
         return fromImage;
     }
 
-    private boolean checkForNocache(ImageConfiguration imageConfig) {
-        String noCache = System.getProperty("docker.noCache");
-        if (noCache == null) {
-            noCache = System.getProperty("docker.nocache");
-        }
-        if (noCache != null) {
-            return noCache.length() == 0 || Boolean.valueOf(noCache);
-        } else {
-            BuildImageConfiguration buildConfig = imageConfig.getBuildConfiguration();
-            return buildConfig.noCache();
+    private void removeDanglingImage(String oldImageName, String oldImageId, String newImageId, CleanupMode cleanupMode, boolean force) throws DockerAccessException {
+        if (oldImageId != null && !oldImageId.equals(newImageId)) {
+            if (force) {
+                removeImage(oldImageName, oldImageId, cleanupMode, true);
+            } else {
+                // Verify that the image is indeed dangling and remove it (or skip removal altogether).
+                List<String> oldImageTags = docker.getImageTags(oldImageId);
+                if (oldImageTags != null) {
+                    if (oldImageTags.isEmpty()) {
+                        removeImage(oldImageName, oldImageId, cleanupMode, false);
+                    } else {
+                        log.warn("%s: Skipped removing image %s; still tagged with: ", oldImageName, oldImageId, String.join(",", oldImageTags));
+                    }
+                }
+            }
         }
     }
+
+    private void removeImage(String oldImageName, String oldImageId, CleanupMode cleanupMode, boolean force) throws DockerAccessException {
+        try {
+            docker.removeImage(oldImageId, force);
+            log.info("%s: Removed dangling image %s", oldImageName, oldImageId);
+        } catch (DockerAccessException exp) {
+            if (cleanupMode == CleanupMode.TRY_TO_REMOVE) {
+                log.warn("%s: %s (dangling image)%s", oldImageName, exp.getMessage(),
+                        (exp.getCause() != null ? " [" + exp.getCause().getMessage() + "]" : ""));
+            } else {
+                throw exp;
+            }
+        }
+    }
+
 
     private boolean checkForSquash(ImageConfiguration imageConfig) {
         String squash = System.getProperty("docker.squash");
@@ -438,11 +435,6 @@ public class BuildService {
             return buildConfig.squash();
         }
     }
-
-    private boolean isEmpty(String str) {
-        return str == null || str.isEmpty();
-    }
-
 
     // ===========================================
 

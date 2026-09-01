@@ -145,7 +145,7 @@ public class RunService {
         RunImageConfiguration runConfig = imageConfig.getRunConfiguration();
         String imageName = imageConfig.getName();
 
-        Collection<Container> existingContainers = queryService.getContainersForImage(imageName, true);
+        Collection<Container> existingContainers = queryService.listContainers(true);
         String containerName = ContainerNamingUtil
                 .formatContainerName(imageConfig, defaultContainerNamePattern, buildTimestamp, existingContainers);
 
@@ -366,7 +366,7 @@ public class RunService {
                                                 GavLabel gavLabel, Properties mavenProps, File baseDir)
             throws DockerAccessException {
         try {
-            ContainerCreateConfig config = new ContainerCreateConfig(imageName)
+            ContainerCreateConfig config = new ContainerCreateConfig(imageName, runConfig.getPlatform())
                     .hostname(runConfig.getHostname())
                     .domainname(runConfig.getDomainname())
                     .user(runConfig.getUser())
@@ -376,7 +376,8 @@ public class RunService {
                     .environment(runConfig.getEnvPropertyFile(), runConfig.getEnv(), mavenProps)
                     .labels(mergeLabels(runConfig.getLabels(), gavLabel))
                     .command(runConfig.getCmd())
-                    .hostConfig(createContainerHostConfig(runConfig, mappedPorts, baseDir));
+                    .hostConfig(createContainerHostConfig(runConfig, mappedPorts, baseDir))
+                    .healthcheck(runConfig.getHealthCheckConfiguration());
             RunVolumeConfiguration volumeConfig = runConfig.getVolumeConfiguration();
             if (volumeConfig != null) {
                 resolveRelativeVolumeBindings(baseDir, volumeConfig);
@@ -426,6 +427,7 @@ public class RunService {
                 .dnsSearch(runConfig.getDnsSearch())
                 .capAdd(runConfig.getCapAdd())
                 .capDrop(runConfig.getCapDrop())
+                .sysctls(runConfig.getSysctls())
                 .securityOpts(runConfig.getSecurityOpts())
                 .memory(runConfig.getMemory())
                 .memorySwap(runConfig.getMemorySwap())
@@ -438,7 +440,8 @@ public class RunService {
                 .cpus(runConfig.getCpus())
                 .cpuSet(runConfig.getCpuSet())
                 .readonlyRootfs(runConfig.getReadOnly())
-                .autoRemove(runConfig.getAutoRemove());
+                .autoRemove(runConfig.getAutoRemove())
+                .userns(runConfig.getUserns());
 
         addVolumeConfig(config, runConfig, baseDir);
         addNetworkingConfig(config, runConfig);

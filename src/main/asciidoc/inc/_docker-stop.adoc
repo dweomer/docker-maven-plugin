@@ -38,7 +38,7 @@ This should match the setting for <<{plugin}:start>> goals if the goals are conf
 | `docker.keepRunning`
 
 | *removeVolumes*
-| If set to `true` will remove any volumes associated to the container as well. This option will be ignored if either `keepContainer` or `keepRunning` are true.
+| If set to `true` will remove anonymous volumes associated to the container as well. This option will be ignored if either `keepContainer` or `keepRunning` are true.
 | `docker.removeVolumes`
 
 | *stopNamePattern*
@@ -46,6 +46,12 @@ This should match the setting for <<{plugin}:start>> goals if the goals are conf
 removed (depending on the values of `keepContainer` and `keepRunning`),
 independently of whether there is an <<image-configuration, image configuration>>.
 | `docker.stopNamePattern`
+
+| *executeStopOnVMShutdown*
+| If `true`, the containers are not stopped right away, but when the build is finished (success or failed).
+
+Defaults to `false`.
+| `docker.executeStopOnVMShutdown`
 |===
 
 .Example

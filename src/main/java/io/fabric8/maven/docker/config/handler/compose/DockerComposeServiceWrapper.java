@@ -7,14 +7,18 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import io.fabric8.maven.docker.config.Arguments;
+import io.fabric8.maven.docker.config.HealthCheckConfiguration;
+import io.fabric8.maven.docker.config.HealthCheckMode;
 import io.fabric8.maven.docker.config.ImageConfiguration;
 import io.fabric8.maven.docker.config.LogConfiguration;
 import io.fabric8.maven.docker.config.NetworkConfig;
 import io.fabric8.maven.docker.config.RestartPolicy;
 import io.fabric8.maven.docker.config.RunVolumeConfiguration;
 import io.fabric8.maven.docker.config.UlimitConfig;
+import io.fabric8.maven.docker.config.WaitConfiguration;
 import io.fabric8.maven.docker.util.VolumeBindingUtil;
 
 
@@ -104,13 +108,207 @@ class DockerComposeServiceWrapper {
         return asList("cap_drop");
     }
 
+    Map<String, String> getSysctls() {
+        return asMap("sysctls");
+    }
+
     Arguments getCommand() {
         Object command = asObject("command");
         return command != null ? asArguments(command, "command") : null;
     }
 
     List<String> getDependsOn() {
-        return asList("depends_on");
+        try {
+            return asList("depends_on");
+        // With the new long style of depends_on since compose 2.1+, this may be a map.
+        // Maps' keys still are the container names though.
+        } catch (ClassCastException e) {
+            return new ArrayList<>(asMap("depends_on").keySet());
+        }
+    }
+
+    boolean usesLongSyntaxDependsOn() {
+        return asObject("depends_on") instanceof Map;
+    }
+
+    public String getPlatform() {
+        return asString("platform");
+    }
+
+    public HealthCheckConfiguration getHealthCheckConfiguration() {
+        if (!configuration.containsKey("healthcheck")) {
+            return null;
+        }
+        Map<String, Object> healthCheckAsMap = (Map<String, Object>) configuration.get("healthcheck");
+        HealthCheckConfiguration.Builder builder = new HealthCheckConfiguration.Builder();
+        Object disable = healthCheckAsMap.get("disable");
+        if (isaBoolean(disable)) {
+            builder.mode(HealthCheckMode.none);
+            return builder.build();
+        }
+
+        Object test = healthCheckAsMap.get("test");
+        if (test == null) {
+            return null;
+        }
+        if (test instanceof List) {
+            List<String> cmd = (List<String>) test;
+            if (cmd.size() > 0 && cmd.get(0).equalsIgnoreCase("NONE")) {
+                builder.mode(HealthCheckMode.none);
+                return builder.build();
+            } else {
+                builder.cmd(new Arguments((List<String>) test));
+                builder.mode(HealthCheckMode.cmd);
+            }
+        } else {
+            builder.cmd(new Arguments(Arrays.asList("CMD-SHELL", test.toString())));
+            builder.mode(HealthCheckMode.cmd);
+        }
+        enableWaitCondition(WaitCondition.HEALTHY);
+
+        Object interval = healthCheckAsMap.get("interval");
+        if (interval != null) {
+            builder.interval(interval.toString());
+        }
+        Object timeout = healthCheckAsMap.get("timeout");
+        if (timeout != null) {
+            builder.timeout(timeout.toString());
+        }
+        Object retries = healthCheckAsMap.get("retries");
+        if (retries instanceof Number) {
+            builder.retries(((Number) retries).intValue());
+        }
+        Object startPeriod = healthCheckAsMap.get("start_period");
+        if (startPeriod != null) {
+            builder.startPeriod(startPeriod.toString());
+        }
+
+        return builder.build();
+    }
+
+    private static boolean isaBoolean(Object disable) {
+        return disable instanceof Boolean && (Boolean) disable;
+    }
+
+    /**
+     * <a href="https://docs.docker.com/compose/compose-file/compose-file-v2/#depends_on">Docker Compose Spec v2.1+ defined conditions</a>
+     */
+    enum WaitCondition {
+        HEALTHY("service_healthy"),
+        COMPLETED("service_completed_successfully"),
+        STARTED("service_started");
+
+        private final String condition;
+        WaitCondition(String condition) {
+            this.condition = condition;
+        }
+
+        static WaitCondition fromString(String string) {
+            return Arrays.stream(WaitCondition.values()).filter(wc -> wc.condition.equals(string)).findFirst().orElseThrow(
+                () -> new IllegalArgumentException("invalid condition \"" + string + "\"")
+            );
+        }
+    }
+
+    /**
+     * Extract a required condition of another (dependent) service from this service.
+     * In a compose file following v2.1+ format this looks like this:
+     * <pre>{@code
+     * services:
+     *   web:
+     *     build: .
+     *     depends_on:
+     *       db:
+     *         condition: service_healthy
+     *       redis:
+     *         condition: service_started
+     * }</pre>
+     * If this is the "web" service and the parameter to this method is "db", it will extract
+     * the validated condition via {@link WaitCondition}.
+     *
+     * @param dependentServiceName The dependent service's name (not alias!)
+     * @return The waiting condition if valid
+     * @throws IllegalArgumentException When condition cannot be extracted or is invalid
+     */
+    WaitCondition getWaitCondition(String dependentServiceName) {
+        Objects.requireNonNull(dependentServiceName, "Dependent service's name may not be null");
+
+        Object dependsOnObj = asObject("depends_on");
+        if (dependsOnObj instanceof Map) {
+            Map<String, Object> dependsOn = (Map<String, Object>) dependsOnObj;
+            Object dependenSvcObj = dependsOn.get(dependentServiceName);
+
+            if (dependenSvcObj instanceof Map) {
+                Map<String, String> dependency = (Map<String,String>) dependenSvcObj;
+
+                if (dependency.containsKey("condition")) {
+                    String condition = dependency.get("condition");
+                    try {
+                        return WaitCondition.fromString(condition);
+                    } catch (IllegalArgumentException e) {
+                        throwIllegalArgumentException("depends_on service \"" + dependentServiceName +
+                            "\" has invalid syntax (" + e.getMessage() + ")");
+                    }
+                }
+                throwIllegalArgumentException("depends_on service \"" + dependentServiceName + "\" has invalid syntax (missing condition)");
+            }
+            throwIllegalArgumentException("depends_on service \"" + dependentServiceName + "\" has invalid syntax (no map)");
+        }
+        throwIllegalArgumentException("depends_on does not use long syntax, cannot retrieve condition");
+        return null;
+    }
+
+    private boolean healthyWaitRequested;
+    private boolean successExitWaitRequested;
+
+    /**
+     * Switch on waiting conditions for this service.
+     * It will not yet check for conflicting conditions, this is done in {@link #getWaitConfiguration()}
+     * when building the image configurations.
+     * @param condition The condition to enable for this service
+     */
+    void enableWaitCondition(WaitCondition condition) {
+        Objects.requireNonNull(condition, "Condition may not be null");
+
+        // We do not check for conflicting conditions here - this is done when the wrapper is asked for its WaitConfig
+        // Note: yes, we check here again, as we rely on Strings, not an enum
+        switch (condition) {
+            case HEALTHY:
+                this.healthyWaitRequested = true;
+                break;
+            case COMPLETED:
+                this.successExitWaitRequested = true;
+                break;
+            case STARTED:
+                // No need to do anything here.
+                // This is equivalent to the short syntax and simple startup ordering doesn't need a wait configuration.
+            default:
+                // Do nothing when unknown condition
+        }
+    }
+
+    /**
+     * Build the actual wait configuration for this service.
+     * <p>Please note: while Docker Compose allows you to create a dependency graph which will allow to wait
+     * for a dependent service to exit from one service and at the same time wait for it to be healthy from another,
+     * this is not possible with this Maven Plugin.</p>
+     * <p>The reasoning behind this limitation is rooted in the data model. Docker Compose attaches the
+     * requested conditions at the depending service level, while this plugin only supports wait conditions
+     * on the dependent service. Once these are fulfilled, all depending services will be started.</p>
+     * @return The wait configuration
+     */
+    WaitConfiguration getWaitConfiguration() {
+        if (successExitWaitRequested && healthyWaitRequested) {
+            throwIllegalArgumentException("Conflicting requested conditions \"service_healthy\" and \"service_completed_successfully\" for this service");
+        } else if (healthyWaitRequested) {
+            return new WaitConfiguration.Builder().healthy(healthyWaitRequested).build();
+        } else if (successExitWaitRequested) {
+            return new WaitConfiguration.Builder().exit(0).build();
+        } else if (getAlias().equals(enclosingImageConfig.getAlias())) {
+            return enclosingImageConfig.getRunConfiguration() == null ? null :
+                enclosingImageConfig.getRunConfiguration().getWaitConfiguration();
+        }
+        return null;
     }
 
     List<String> getDns() {
@@ -270,20 +468,20 @@ class DockerComposeServiceWrapper {
         RunVolumeConfiguration.Builder builder = new RunVolumeConfiguration.Builder();
         List<String> volumes = asList("volumes");
         boolean added = false;
-        if (volumes.size() > 0) {
+        if (!volumes.isEmpty()) {
             builder.bind(volumes);
             added = true;
         }
         List<String> volumesFrom = asList("volumes_from");
-        if (volumesFrom.size() > 0) {
+        if (!volumesFrom.isEmpty()) {
             builder.from(volumesFrom);
             added = true;
         }
 
         if (added) {
-            RunVolumeConfiguration configuration = builder.build();
-            VolumeBindingUtil.resolveRelativeVolumeBindings(baseDir, configuration);
-            return configuration;
+            RunVolumeConfiguration runVolumeConfiguration = builder.build();
+            VolumeBindingUtil.resolveRelativeVolumeBindings(baseDir, runVolumeConfiguration);
+            return runVolumeConfiguration;
         }
 
         return null;
@@ -356,9 +554,8 @@ class DockerComposeServiceWrapper {
         return asLong("cpu_shares");
     }
 
-    public Long getCpusCount(){
-        Double cpus = asDouble("cpus");
-        return convertToNanoCpus(cpus);
+    public Double getCpusCount(){
+        return asDouble("cpus");
     }
 
     public List<String> getDevices() {
@@ -445,16 +642,21 @@ class DockerComposeServiceWrapper {
         return map;
     }
 
-    private Long convertToNanoCpus(Double cpus){
-        if(cpus == null){
-            return null;
-        }
-        return (long)(cpus * 1000000000);
-    }
-
-    private void throwIllegalArgumentException(String msg) {
+    void throwIllegalArgumentException(String msg) {
         throw new IllegalArgumentException(String.format("%s: %s - ", composeFile, name) + msg);
     }
 
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof DockerComposeServiceWrapper)) return false;
+        DockerComposeServiceWrapper that = (DockerComposeServiceWrapper) o;
+        return Objects.equals(name, that.name);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(name);
+    }
 }
 

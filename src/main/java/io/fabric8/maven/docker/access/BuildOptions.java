@@ -22,19 +22,20 @@ import java.util.Map;
 import io.fabric8.maven.docker.util.JsonFactory;
 
 /**
+ * https://docs.docker.com/engine/api/v1.41/#operation/ImageBuild
  * @author roland
  * @since 03/01/17
  */
 public class BuildOptions {
 
-    private Map<String, String> options;
+    private final Map<String, String> options;
 
     public BuildOptions() {
-        this(new HashMap<String, String>());
+        this(new HashMap<>());
     }
 
     public BuildOptions(Map<String, String> options) {
-        this.options = options != null ? new HashMap<>(options) : new HashMap<String, String>();
+        this.options = options != null ? new HashMap<>(options) : new HashMap<>();
     }
 
     public BuildOptions addOption(String key, String value) {
@@ -85,6 +86,13 @@ public class BuildOptions {
     public BuildOptions network(String network) {
         if (network != null && !network.isEmpty()) {
             options.put("networkmode", network);
+        }
+        return this;
+    }
+
+    public BuildOptions target(String target) {
+        if (target != null && !target.isEmpty()) {
+            options.put("target", target);
         }
         return this;
     }

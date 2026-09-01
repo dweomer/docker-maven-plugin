@@ -19,6 +19,12 @@ In addition to the <<global-configuration>>, this goal supports the following gl
 | Starts docker images in parallel while dependencies expressed as <<start-links,Link>> or <<start-depends-on,dependsOn>> are respected. This option can significantly reduce the startup time because independent containers do not need to wait for each other.
 | `docker.startParallel`
 
+| *startContainerWaitTimeout*
+| Overrides the default across all the containers wait timeout (<wait><time>) is milliseconds.
+Overriding that property might become particularly useful when docker-compose config defines the healthchecks,
+but the default wait timeout of 10000ms is too short for some containers to become healthy.
+| `docker.startContainerWaitTimeout`
+
 |===
 
 The `<run>` configuration element knows the following sub elements:
@@ -29,11 +35,17 @@ The `<run>` configuration element knows the following sub elements:
 |===
 | Element | Description
 
+| *autoRemove*
+| If `true` automatically remove the container when it exits. This has no effect if <<start-restart, Restart Policy>> has been set.
+
 | *capAdd*
 | List of `add` elements to specify kernel parameters to add to the container.
 
 | *capDrop*
 | List of `drop` elements to specify kernel parameters to remove from the container.
+
+| *sysctls*
+| Map of namespaced kernel parameters (https://docs.docker.com/engine/reference/commandline/run/#configure-namespaced-kernel-parameters-sysctls-at-runtime[sysctls]) to set in the container.
 
 | <<misc-startup, *cmd*>>
 | Command which should be executed at the end of the container's startup. If not given, the image's default command is used. See <<misc-startup, Startup Arguments>> for details.
@@ -104,14 +116,14 @@ a| *This option is deprecated, please use a `containerNamePattern` instead* Nami
 | <<start-port-mapping, *ports*>>
 | <<start-port-mapping,Port mappings>> for exposing container ports to host ports.
 
+| *platform*
+| Specify an explicit platform to use when starting a docker container. May be set with property `docker.platform`.  Defaults to native platform.
+
 | *privileged*
 | If `true` give container full access to host
 
 | *readOnly*
 | If `true` mount the container's root filesystem as read only
-
-| *autoRemove*
-| If `true` automatically remove the container when it exits. This has no effect if <<start-restart, Restart Policy>> has been set.
 
 | <<start-restart, *restartPolicy*>>
 | Restart Policy
@@ -142,6 +154,9 @@ See below for an example.
 
 | *user*
 | User used inside the container
+
+| *userns*
+| User namespace mode; e.g. `keep-id:uid=185`
 
 | <<start-volumes, *volumes*>>
 | Volume configuration for binding to host directories and from other containers. See Volumes for details.

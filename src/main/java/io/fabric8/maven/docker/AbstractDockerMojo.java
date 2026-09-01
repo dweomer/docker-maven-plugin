@@ -2,6 +2,9 @@ package io.fabric8.maven.docker;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -10,7 +13,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import com.google.common.collect.ImmutableList;
 import io.fabric8.maven.docker.access.DockerAccess;
 import io.fabric8.maven.docker.access.DockerAccessException;
 import io.fabric8.maven.docker.access.ExecException;
@@ -25,6 +27,7 @@ import io.fabric8.maven.docker.config.handler.ImageConfigResolver;
 import io.fabric8.maven.docker.log.LogDispatcher;
 import io.fabric8.maven.docker.log.LogOutputSpecFactory;
 import io.fabric8.maven.docker.model.Container;
+import io.fabric8.maven.docker.service.BuildService;
 import io.fabric8.maven.docker.service.DockerAccessFactory;
 import io.fabric8.maven.docker.service.ImagePullManager;
 import io.fabric8.maven.docker.service.QueryService;
@@ -37,9 +40,11 @@ import io.fabric8.maven.docker.util.AuthConfigFactory;
 import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.GavLabel;
 import io.fabric8.maven.docker.util.ImageNameFormatter;
-import io.fabric8.maven.docker.util.Logger;
+import io.fabric8.maven.docker.util.MojoParameters;
 import io.fabric8.maven.docker.util.NamePatternUtil;
 
+import io.fabric8.maven.docker.util.ProjectPaths;
+import org.apache.maven.archiver.MavenArchiveConfiguration;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecution;
@@ -49,12 +54,9 @@ import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.settings.Settings;
+import org.apache.maven.shared.filtering.MavenFileFilter;
+import org.apache.maven.shared.filtering.MavenReaderFilter;
 import org.apache.maven.shared.utils.logging.MessageUtils;
-import org.codehaus.plexus.PlexusConstants;
-import org.codehaus.plexus.PlexusContainer;
-import org.codehaus.plexus.context.Context;
-import org.codehaus.plexus.context.ContextException;
-import org.codehaus.plexus.personality.plexus.lifecycle.phase.Contextualizable;
 import org.fusesource.jansi.Ansi;
 
 /**
@@ -63,7 +65,7 @@ import org.fusesource.jansi.Ansi;
  * @author roland
  * @since 26.03.14
  */
-public abstract class AbstractDockerMojo extends AbstractMojo implements Contextualizable, ConfigHelper.Customizer {
+public abstract class AbstractDockerMojo extends AbstractMojo implements ConfigHelper.Customizer {
 
     // Key for indicating that a "start" goal has run
     public static final String CONTEXT_KEY_START_CALLED = "CONTEXT_KEY_DOCKER_START_CALLED";
@@ -102,6 +104,10 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
 
     @Component
     protected DockerAccessFactory dockerAccessFactory;
+
+    // Redirect the plugin output to a file
+    @Parameter(property = "outputFile")
+    private String outputFile;
 
     @Parameter(property = "docker.autoPull")
     protected String autoPull;
@@ -203,7 +209,7 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
      * Image configurations configured directly.
      */
     @Parameter
-    private List<ImageConfiguration> images;
+    List<ImageConfiguration> images;
 
     /**
      * Image configurations configured via maps to allow overriding.
@@ -215,14 +221,41 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
     @Parameter
     private DockerMachineConfiguration machine;
 
+    @Parameter(defaultValue = "${project.packaging}", required = true)
+    protected String packaging;
+
+    @Parameter(property = "docker.skip.pom", defaultValue = "false")
+    protected boolean skipPom;
+
+    @Parameter( defaultValue = "${reactorProjects}", required = true, readonly = true )
+    protected List<MavenProject> reactorProjects;
+    @Parameter
+    protected MavenArchiveConfiguration archive;
+
+    @Component
+    protected MavenFileFilter mavenFileFilter;
+
+    @Component
+    protected MavenReaderFilter mavenFilterReader;
+
+    @Parameter
+    protected Map<String, String> buildArgs;
+    // ==============================================================================================================
+    // Parameters required from Maven when building an assembly. They cannot be injected directly
+    // into DockerAssemblyCreator.
+    // See also here: http://maven.40175.n5.nabble.com/Mojo-Java-1-5-Component-MavenProject-returns-null-vs-JavaDoc-parameter-expression-quot-project-quot-s-td5733805.html
+    @Parameter(property = "docker.pull.registry")
+    String pullRegistry;
+
     // Images resolved with external image resolvers and hooks for subclass to
     // mangle the image configurations.
-    private List<ImageConfiguration> resolvedImages;
+    List<ImageConfiguration> resolvedImages;
 
     // Handler dealing with authentication credentials
-    private AuthConfigFactory authConfigFactory;
+    @Component
+    AuthConfigFactory authConfigFactory;
 
-    protected Logger log;
+    protected AnsiLogger log;
 
     private String minimalApiVersion;
 
@@ -238,7 +271,21 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (!skip) {
             boolean ansiRestore = Ansi.isEnabled();
-            log = new AnsiLogger(getLog(), useColorForLogging(), verbose, !settings.getInteractiveMode(), getLogPrefix());
+            File output = null;
+            if (outputFile != null) {
+                output = new File(outputFile);
+                if (output.exists() && !output.delete()) {
+                    getLog().warn("Failed to delete existing output file " + output);
+                }
+            }
+            try {
+                log = new AnsiLogger(getLog(), useColorForLogging(), verbose, !settings.getInteractiveMode(), getLogPrefix(), output);
+            } catch (UncheckedIOException exp) {
+                // Leave a usable logger behind: error handling further up (e.g. the shutdown hook installed
+                // by docker:stop) logs through this field and would otherwise fail with a NullPointerException.
+                log = new AnsiLogger(getLog(), useColorForLogging(), verbose, !settings.getInteractiveMode(), getLogPrefix());
+                throw new MojoExecutionException("Cannot write to output file " + output + ": " + exp.getCause().getMessage(), exp);
+            }
 
             try {
                 authConfigFactory.setLog(log);
@@ -271,8 +318,21 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
                 }
             } finally {
                 Ansi.setEnabled(ansiRestore);
+                try {
+                    log.close();
+                } catch (IOException exp) {
+                    logException(exp);
+                }
             }
         }
+    }
+
+    protected BuildService.BuildContext getBuildContext() {
+        return new BuildService.BuildContext.Builder()
+          .buildArgs(buildArgs)
+          .mojoParameters(createMojoParameters())
+          .registryConfig(getRegistryConfig(pullRegistry))
+          .build();
     }
 
     private void logException(Exception exp) {
@@ -296,7 +356,7 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
                 .build();
     }
 
-    protected RegistryService.RegistryConfig getRegistryConfig(String specificRegistry) throws MojoExecutionException {
+    protected RegistryService.RegistryConfig getRegistryConfig(String specificRegistry) {
         return new RegistryService.RegistryConfig.Builder()
                 .settings(settings)
                 .authConfig(authConfig != null ? authConfig.toMap() : null)
@@ -426,13 +486,6 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
 
     // =================================================================================
 
-    @Override
-    public void contextualize(Context context) throws ContextException {
-        authConfigFactory = new AuthConfigFactory((PlexusContainer) context.get(PlexusConstants.PLEXUS_KEY));
-    }
-
-    // =================================================================================
-
     protected GavLabel getGavLabel() {
         // Label used for this run
         return new GavLabel(project.getGroupId(), project.getArtifactId(), project.getVersion());
@@ -447,8 +500,9 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
         return dispatcher;
     }
 
-    private ImmutableList<ImageConfiguration> getAllImages() {
-        ImmutableList.Builder<ImageConfiguration> allImages = ImmutableList.builder();
+    private List<ImageConfiguration> getAllImages() {
+        List<ImageConfiguration> allImages = new ArrayList<>();
+
         if (images != null) {
             allImages.addAll(images);
         }
@@ -460,7 +514,7 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
                 allImages.add(config);
             });
         }
-        return allImages.build();
+        return Collections.unmodifiableList(allImages);
     }
 
     public ImagePullManager getImagePullManager(String imagePullPolicy, String autoPull) {
@@ -550,13 +604,17 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
                 .collect(Collectors.toList());
     }
 
-    protected void pullImage(QueryService queryService, RegistryService registryService, ImageConfiguration imageConfig,
-            String pullRegistry) throws MojoExecutionException, DockerAccessException {
+    protected void pullImage(RegistryService registryService, ImageConfiguration imageConfig,
+                             String pullRegistry) throws MojoExecutionException, DockerAccessException {
         String imageName = imageConfig.getName();
         RunImageConfiguration runConfiguration = imageConfig.getRunConfiguration();
         ImagePullManager pullManager = getImagePullManager(determinePullPolicy(runConfiguration), autoPull);
         RegistryConfig registryConfig = getRegistryConfig(pullRegistry);
-        registryService.pullImageWithPolicy(imageName, pullManager, registryConfig, queryService.hasImage(imageName));
+        registryService.pullImageWithPolicy(imageName, pullManager, registryConfig, imageConfig.getBuildConfiguration());
+    }
+
+    protected boolean shouldSkipPom() {
+        return skipPom && packaging.equalsIgnoreCase("pom");
     }
 
     private boolean containerMatchesPattern(Container container, Matcher imageNameMatcher, Matcher containerNameMatcher,
@@ -578,5 +636,14 @@ public abstract class AbstractDockerMojo extends AbstractMojo implements Context
 
     private String determinePullPolicy(RunImageConfiguration runConfig) {
         return runConfig.getImagePullPolicy() != null ? runConfig.getImagePullPolicy() : imagePullPolicy;
+    }
+
+    protected ProjectPaths createProjectPaths() {
+        return new ProjectPaths(project.getBasedir(), outputDirectory);
+    }
+
+    protected MojoParameters createMojoParameters() {
+        return new MojoParameters(session, project, archive, mavenFileFilter, mavenFilterReader,
+            settings, sourceDirectory, outputDirectory, reactorProjects);
     }
 }

@@ -33,7 +33,6 @@ public class JibBuildService {
     private static final List<String> DEFAULT_DOCKER_REGISTRIES = Arrays.asList(
             "docker.io", "index.docker.io", "registry.hub.docker.com"
     );
-    private static final String PUSH_REGISTRY = ".docker.push.registry";
     private static final String ARCHIVE_FILE_NAME = "docker-build";
     private final Logger log;
     private final ServiceHub serviceHub;
@@ -51,15 +50,15 @@ public class JibBuildService {
             if (imageConfig.getBuildConfiguration().isDockerFileMode()) {
                 throw new MojoExecutionException("Dockerfile mode is not supported with JIB build strategy");
             }
-            prependRegistry(imageConfig, mojoParameters.getProject().getProperties().getProperty(PUSH_REGISTRY));
+            prepareImageConfiguration(imageConfig, registryConfig);
             BuildDirs buildDirs = new BuildDirs(imageConfig.getName(), mojoParameters);
             final Credential pullRegistryCredential = getRegistryCredentials(
-                    registryConfig, false, imageConfig, log);
+                    registryConfig, false, imageConfig);
             final JibContainerBuilder containerBuilder = containerFromImageConfiguration(jibImageFormat, imageConfig, pullRegistryCredential);
 
             File dockerTarArchive = getAssemblyTarArchive(imageConfig, serviceHub, mojoParameters, log);
 
-            for (AssemblyConfiguration assemblyConfiguration : imageConfig.getBuildConfiguration().getAssemblyConfigurations()) {
+            for (AssemblyConfiguration assemblyConfiguration : imageConfig.getBuildConfiguration().getAllAssemblyConfigurations()) {
                 // TODO: Improve Assembly Manager so that the effective assemblyFileEntries computed can be properly shared
                 // the call to DockerAssemblyManager.getInstance().createDockerTarArchive should not be necessary,
                 // files should be added using the AssemblyFileEntry list. DockerAssemblyManager, should provide
@@ -77,6 +76,9 @@ public class JibBuildService {
             JibServiceUtil.buildContainer(containerBuilder,
                     TarImage.at(dockerTarArchive.toPath()).named(imageConfig.getName()), log);
             log.info(" %s successfully built", dockerTarArchive.getAbsolutePath());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new MojoExecutionException("Error when building JIB image", ex);
         } catch (Exception ex) {
             throw new MojoExecutionException("Error when building JIB image", ex);
         }
@@ -85,11 +87,11 @@ public class JibBuildService {
     public void push(Collection<ImageConfiguration> imageConfigs, int retries, RegistryService.RegistryConfig registryConfig, boolean skipTag) throws MojoExecutionException {
         try {
             for (ImageConfiguration imageConfiguration : imageConfigs) {
-                prependRegistry(imageConfiguration, registryConfig.getRegistry());
+                prepareImageConfiguration(imageConfiguration, registryConfig);
                 log.info("This push refers to: %s", imageConfiguration.getName());
                 JibServiceUtil.jibPush(
                         imageConfiguration,
-                        getRegistryCredentials(registryConfig, true, imageConfiguration, log),
+                        getRegistryCredentials(registryConfig, true, imageConfiguration),
                         getBuildTarArchive(imageConfiguration, mojoParameters),
                         log
                 );
@@ -117,21 +119,14 @@ public class JibBuildService {
     }
 
     static Credential getRegistryCredentials(
-            RegistryService.RegistryConfig registryConfig, boolean isPush, ImageConfiguration imageConfiguration, Logger log)
+            RegistryService.RegistryConfig registryConfig, boolean isPush, ImageConfiguration imageConfiguration)
             throws MojoExecutionException {
 
         String registry;
         if (isPush) {
-            registry = EnvUtil.firstRegistryOf(
-                    new ImageName(imageConfiguration.getName()).getRegistry(),
-                    imageConfiguration.getRegistry(),
-                    registryConfig.getRegistry()
-            );
+            registry = getConfiguredPushRegistry(registryConfig, imageConfiguration);
         } else {
-            registry = EnvUtil.firstRegistryOf(
-                    new ImageName(getBaseImage(imageConfiguration)).getRegistry(),
-                    registryConfig.getRegistry()
-            );
+            registry = getConfiguredPullRegistry(registryConfig, imageConfiguration);
         }
         if (registry == null || DEFAULT_DOCKER_REGISTRIES.contains(registry)) {
             registry = DOCKER_LOGIN_DEFAULT_REGISTRY; // Let's assume docker is default registry.
@@ -149,5 +144,26 @@ public class JibBuildService {
     static File getBuildTarArchive(ImageConfiguration imageConfiguration, MojoParameters mojoParameters) {
         BuildDirs buildDirs = new BuildDirs(imageConfiguration.getName(), mojoParameters);
         return new File(buildDirs.getTemporaryRootDirectory(), ARCHIVE_FILE_NAME + "." + ArchiveCompression.none.getFileSuffix());
+    }
+
+    static ImageConfiguration prepareImageConfiguration(ImageConfiguration imageConfig, RegistryService.RegistryConfig registryConfig) {
+        String configuredRegistry = getConfiguredPushRegistry(registryConfig, imageConfig);
+        prependRegistry(imageConfig, configuredRegistry);
+        return imageConfig;
+    }
+
+    private static String getConfiguredPushRegistry(RegistryService.RegistryConfig registryConfig, ImageConfiguration imageConfiguration) {
+        return EnvUtil.firstRegistryOf(
+            new ImageName(imageConfiguration.getName()).getRegistry(),
+            imageConfiguration.getRegistry(),
+            registryConfig.getRegistry()
+        );
+    }
+
+    private static String getConfiguredPullRegistry(RegistryService.RegistryConfig registryConfig, ImageConfiguration imageConfiguration) {
+        return EnvUtil.firstRegistryOf(
+            new ImageName(getBaseImage(imageConfiguration)).getRegistry(),
+            registryConfig.getRegistry()
+        );
     }
 }

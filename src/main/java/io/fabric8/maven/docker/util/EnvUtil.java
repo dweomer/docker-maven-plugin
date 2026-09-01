@@ -3,19 +3,31 @@ package io.fabric8.maven.docker.util;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.google.common.base.*;
+import com.google.common.base.Function;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
+import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.project.MavenProject;
-import org.apache.maven.shared.utils.io.FileUtils;
+import org.codehaus.plexus.util.FileUtils;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -37,11 +49,36 @@ public class EnvUtil {
     public static final String DOCKER_HTTP_PORT = "2375";
 
     public static final String PROPERTY_COMBINE_POLICY_SUFFIX = "_combine";
+    private static UnaryOperator<String> envGetter = System::getenv;
+    private static UnaryOperator<String> propertyGetter = System::getProperty;
 
-    // injection point for unit tests
-    private static UnaryOperator<String> systemGetEnv = System::getenv;
 
     private EnvUtil() {}
+
+    /**
+     * Don't use in production code. Only for testing purposes.
+     * @param getter
+     */
+    public static void overrideEnvGetter(UnaryOperator<String> getter) {
+        envGetter = getter;
+    }
+
+    public static void overridePropertyGetter(UnaryOperator<String> propsGetter) {
+        propertyGetter = propsGetter;
+    }
+
+    /**
+     * Return the value of the given environment variable or null if it is not set.
+     * @param variableName name of the environment variable.
+     * @return the value of the environment variable or null if it is not set.
+     */
+    public static String getEnv(String variableName) {
+        return envGetter.apply(variableName);
+    }
+
+    public static String getProperty(String propertyName) {
+        return propertyGetter.apply(propertyName);
+    }
 
     // Convert docker host URL to an HTTP(s) URL
     public static String convertTcpToHttpUrl(String connect) {
@@ -178,27 +215,6 @@ public class EnvUtil {
             res[i] = split[i].replaceAll("\\\\ "," ");
         }
         return res;
-    }
-
-
-    /**
-     * Join a list of objects to a string with a given separator by calling Object.toString() on the elements.
-     *
-     * @param list to join
-     * @param separator separator to use
-     * @return the joined string.
-     */
-    public static String stringJoin(List list, String separator) {
-        StringBuilder ret = new StringBuilder();
-        boolean first = true;
-        for (Object o : list) {
-            if (!first) {
-                ret.append(separator);
-            }
-            ret.append(o);
-            first = false;
-        }
-        return ret.toString();
     }
 
     /**
@@ -362,24 +378,6 @@ public class EnvUtil {
     }
 
     /**
-     * Fix path on Windows machines, i.e. convert 'c:\...\' to '/c/..../'
-     *
-     * @param path path to fix
-     * @return the fixed path
-     */
-    public static String fixupPath(String path) {
-        // Hack-fix for mounting on Windows where the ${projectDir} variable and other
-        // contain backslashes and what not. Related to #188
-        Pattern pattern = Pattern.compile("^(?i)([A-Z]):(.*)$");
-        Matcher matcher = pattern.matcher(path);
-        if (matcher.matches()) {
-            String result = "/" + matcher.group(1).toLowerCase() + matcher.group(2);
-            return result.replace("\\","/");
-        }
-        return path;
-    }
-
-    /**
      * Calculate the duration between now and the given time
      *
      * Taken mostly from http://stackoverflow.com/a/5062810/207604 . Kudos to @dblevins
@@ -439,7 +437,7 @@ public class EnvUtil {
             }
         }
         // Check environment as last resort
-        return System.getenv("DOCKER_REGISTRY");
+        return getEnv("DOCKER_REGISTRY");
     }
 
     // sometimes registries might be specified with https? schema, sometimes not
@@ -451,15 +449,11 @@ public class EnvUtil {
         return "https://" + registry;
     }
 
-    public static File prepareAbsoluteOutputDirPath(MojoParameters params, String dir, String path) {
-        return prepareAbsolutePath(params, new File(params.getOutputDirectory(), dir).toString(), path);
-    }
-
     public static File prepareAbsoluteSourceDirPath(MojoParameters params, String path) {
-        return prepareAbsolutePath(params, params.getSourceDirectory(), path);
+        return prepareAbsolutePath(params.getProject().getBasedir(), params.getSourceDirectory(), path);
     }
 
-    private static File prepareAbsolutePath(MojoParameters params, String directory, String path) {
+    private static File prepareAbsolutePath(File projectBaseDir, String directory, String path) {
         File file = new File(path);
         if (file.isAbsolute()) {
             return file;
@@ -467,7 +461,7 @@ public class EnvUtil {
 
         File baseDir = new File(directory);
         if (!baseDir.isAbsolute()) {
-            baseDir = new File(params.getProject().getBasedir(), directory);
+            baseDir = new File(projectBaseDir, directory);
         }
 
         return new File(baseDir, path);
@@ -476,8 +470,8 @@ public class EnvUtil {
     // create a timestamp file holding time in epoch seconds
     public static void storeTimestamp(File tsFile, Date buildDate) throws MojoExecutionException {
         try {
-            if (tsFile.exists()) {
-                tsFile.delete();
+            if (tsFile.exists() && !tsFile.delete()) {
+                throw new MojoExecutionException("Cannot delete existing timestamp file " + tsFile);
             }
             File dir = tsFile.getParentFile();
             if (!dir.exists()) {
@@ -505,7 +499,7 @@ public class EnvUtil {
     }
 
     public static boolean isWindows() {
-        return System.getProperty("os.name").toLowerCase().contains("windows");
+        return getProperty("os.name").toLowerCase().contains("windows");
     }
 
     public static boolean isMaven350OrLater(MavenSession mavenSession) {
@@ -520,10 +514,22 @@ public class EnvUtil {
      * @return a String value for user's home directory
      */
     public static String getUserHome() {
-        String homeDir = systemGetEnv.apply("HOME");
+        String homeDir = getEnv("HOME");
         if (homeDir == null) {
-            homeDir =  System.getProperty("user.home");
+            homeDir =  getProperty("user.home");
         }
         return homeDir;
+    }
+
+    /**
+     * Resolve a path.  If path starts with '~/', resolve rest of path against the user's home directory.
+     * @param path An absolute or relative path
+     * @return If path starts with '~/', the absolute file path; otherwise, the input path
+     */
+    @Nonnull
+    public static String resolveHomeReference(@Nonnull String path) {
+        return path.startsWith("~/")
+            ? Paths.get(getUserHome()).resolve(path.substring(2)).toString()
+            : path;
     }
 }

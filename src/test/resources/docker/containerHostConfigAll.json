@@ -28,6 +28,9 @@
   "CapDrop":[
     "MKNOD"
   ],
+  "Sysctls": {
+    "key":"value"
+  },
   "SecurityOpt":[
     "seccomp=unconfined"
   ],
@@ -46,10 +49,11 @@
   ],
   "Isolation": "default",
   "CpuShares":1,
-  "NanoCpus":1000000000,
+  "NanoCpus":1500000000,
   "CpusetCpus":"0,1",
   "ReadonlyRootfs":false,    
   "AutoRemove":false,    
+  "UsernsMode":"keep-id",
   "Binds":[
     "/host_tmp:/container_tmp"
   ],

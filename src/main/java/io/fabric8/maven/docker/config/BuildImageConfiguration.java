@@ -1,15 +1,28 @@
 package io.fabric8.maven.docker.config;
 
+import java.io.File;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import javax.annotation.Nonnull;
+
+import org.apache.maven.plugins.annotations.Parameter;
+
 import io.fabric8.maven.docker.util.DeepCopy;
 import io.fabric8.maven.docker.util.EnvUtil;
 import io.fabric8.maven.docker.util.Logger;
 import io.fabric8.maven.docker.util.MojoParameters;
-import org.apache.maven.plugins.annotations.Parameter;
-
-import javax.annotation.Nonnull;
-import java.io.File;
-import java.io.Serializable;
-import java.util.*;
 
 /**
  * @author roland
@@ -136,6 +149,9 @@ public class BuildImageConfiguration implements Serializable {
     private List<String> tags;
 
     @Parameter
+    private BuildXConfiguration buildx;
+
+    @Parameter
     private Map<String, String> env;
 
     @Parameter
@@ -176,10 +192,35 @@ public class BuildImageConfiguration implements Serializable {
     private Boolean skipPush;
 
     @Parameter
+    private Boolean skipTag;
+
+    @Parameter
     private ArchiveCompression compression = ArchiveCompression.none;
 
     @Parameter
     private Map<String,String> buildOptions;
+
+    /**
+     * Target build stage in a multi-stage Dockerfile.
+     * Passed as {@code --target} to {@code docker build} and {@code docker buildx build}.
+     */
+    @Parameter
+    private String target;
+
+    //Default file exclusions
+    @Parameter
+    private Boolean useDefaultExcludes;
+
+    /**
+     * Map specifying the create image options to provide to the docker daemon when pulling or importing an image.
+     *
+     * <p> These options map to the ones listed as query parameters in the Docker Remote API and are restricted to
+     * simple options (e.g.: fromImage, fromSrc, platform).
+     *
+     * @see <a href="https://docs.docker.com/engine/api/v1.41/#operation/ImageCreate">Docker Engine API v1.41</a>
+     */
+    @Parameter
+    private Map<String, String> createImageOptions;
 
     // Path to Dockerfile to use, initialized lazily ....
     private File dockerFileFile, dockerArchiveFile;
@@ -271,16 +312,21 @@ public class BuildImageConfiguration implements Serializable {
     }
 
     /**
-     * @deprecated Use {@link #getAssemblyConfigurations()} instead.
+     * @deprecated Use {@link #getAllAssemblyConfigurations()} instead.
      */
     @Deprecated
     public AssemblyConfiguration getAssemblyConfiguration() {
         return assembly;
     }
 
+
+    /**
+     * Use {@link #getAllAssemblyConfigurations()} unless you specifically want the configuration defined only by <code>assemblies</code>.
+     */
     @Nonnull
-    public List<AssemblyConfiguration> getAssemblyConfigurations() {
+    public List<AssemblyConfiguration> getAssembliesConfiguration() {
         final List<AssemblyConfiguration> assemblyConfigurations = new ArrayList<>();
+
         if (assemblies != null) {
             for (AssemblyConfiguration config : assemblies) {
                 if (config != null) {
@@ -288,9 +334,18 @@ public class BuildImageConfiguration implements Serializable {
                 }
             }
         }
+
+        return assemblyConfigurations;
+    }
+
+    @Nonnull
+    public List<AssemblyConfiguration> getAllAssemblyConfigurations() {
+        final List<AssemblyConfiguration> assemblyConfigurations = getAssembliesConfiguration();
+
         if (assembly != null) {
             assemblyConfigurations.add(assembly);
         }
+
         return assemblyConfigurations;
     }
 
@@ -367,6 +422,15 @@ public class BuildImageConfiguration implements Serializable {
         return skipPush != null ? skipPush : false;
     }
 
+    public boolean skipTag() {
+        return skipTag != null && skipTag;
+    }
+
+    public boolean useDefaultExcludes() {
+
+        return useDefaultExcludes != null ? useDefaultExcludes : true;
+    }
+
     public Boolean getNoCache() {
         return noCache != null ? noCache : nocache;
     }
@@ -387,12 +451,25 @@ public class BuildImageConfiguration implements Serializable {
         return skipPush;
     }
 
+    public Boolean getUseDefaultExcludes() {
+
+        return useDefaultExcludes;
+    }
+
     public ArchiveCompression getCompression() {
         return compression;
     }
 
     public Map<String, String> getBuildOptions() {
         return buildOptions;
+    }
+
+    public String getTarget() {
+        return target;
+    }
+
+    public Map<String, String> getCreateImageOptions() {
+        return createImageOptions;
     }
 
     public Arguments getEntryPoint() {
@@ -420,6 +497,14 @@ public class BuildImageConfiguration implements Serializable {
         return args;
     }
 
+    public BuildXConfiguration getBuildX() {
+        return buildx;
+    }
+
+    public boolean isBuildX() {
+        return buildx!=null && buildx.isBuildX();
+    }
+
     public File getAbsoluteContextDirPath(MojoParameters mojoParams) {
         return EnvUtil.prepareAbsoluteSourceDirPath(mojoParams, getContextDir().getPath());
     }
@@ -430,6 +515,20 @@ public class BuildImageConfiguration implements Serializable {
 
     public File getAbsoluteDockerTarPath(MojoParameters mojoParams) {
         return EnvUtil.prepareAbsoluteSourceDirPath(mojoParams, getDockerArchive().getPath());
+    }
+
+    public String getDockerfileName() {
+        if (isDockerFileMode()) {
+            return getDockerFile().getName();
+        } else {
+            return null;
+        }
+    }
+
+    public void initTags(ConfigHelper.NameFormatter nameFormatter) {
+        if (tags != null) {
+            tags = tags.stream().map(nameFormatter::format).collect(Collectors.toList());
+        }
     }
 
     public static class Builder {
@@ -570,6 +669,11 @@ public class BuildImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder buildx(BuildXConfiguration buildx) {
+            config.buildx = buildx;
+            return this;
+        }
+
         public Builder env(Map<String, String> env) {
             config.env = env;
             return this;
@@ -648,8 +752,29 @@ public class BuildImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder skipTag(Boolean skipTag) {
+            config.skipTag = skipTag;
+            return this;
+        }
+
         public Builder buildOptions(Map<String,String> buildOptions) {
             config.buildOptions = buildOptions;
+            return this;
+        }
+
+        public Builder target(String target) {
+            config.target = target;
+            return this;
+        }
+
+        public Builder createImageOptions(Map<String, String> createImageOptions) {
+            config.createImageOptions = createImageOptions;
+            return this;
+        }
+
+        public Builder useDefaultExcludes(Boolean useDefaultExcludes) {
+
+            config.useDefaultExcludes = useDefaultExcludes;
             return this;
         }
 
@@ -668,6 +793,8 @@ public class BuildImageConfiguration implements Serializable {
         if (healthCheck != null) {
             healthCheck.validate();
         }
+
+        normalizeBuildArgs();
 
         ensureUniqueAssemblyNames(log);
 
@@ -702,15 +829,31 @@ public class BuildImageConfiguration implements Serializable {
     }
 
     private void ensureUniqueAssemblyNames(Logger log) {
-        List<AssemblyConfiguration> assemblyConfigurations = getAssemblyConfigurations();
+        List<AssemblyConfiguration> assemblyConfigurations = getAllAssemblyConfigurations();
         Set<String> assemblyNames = new HashSet<>();
         for (AssemblyConfiguration config : assemblyConfigurations) {
-            boolean wasElementAbsent = assemblyNames.add(config.getName());
+            String assemblyName = config.getName();
+            boolean wasElementAbsent = assemblyNames.add(assemblyName);
             if (!wasElementAbsent) {
-                log.error("Multiple assemblies use the name %s. Please assign each assembly a unique name.");
+                log.error("Multiple assemblies use the name \"%s\". Please assign each assembly a unique name.", assemblyName);
                 throw new IllegalArgumentException("Assembly names must be unique");
             }
         }
+    }
+
+    /**
+     * Build args coming from a Maven property that resolves to an empty or undefined value are injected
+     * as {@code null} (e.g. {@code <FOO>${someEmptyProperty}</FOO>}). Docker treats a build arg without a
+     * value as an empty string, so normalize {@code null} values to {@code ""} instead of letting the build
+     * fail later when the args are collected into a map that rejects null values. See #1858.
+     */
+    private void normalizeBuildArgs() {
+        if (args == null || !args.containsValue(null)) {
+            return;
+        }
+        Map<String, String> normalizedArgs = new LinkedHashMap<>();
+        args.forEach((key, value) -> normalizedArgs.put(key, value == null ? "" : value));
+        args = normalizedArgs;
     }
 
     // Initialize the dockerfile location and the build mode
@@ -736,24 +879,19 @@ public class BuildImageConfiguration implements Serializable {
             File dFile = new File(dockerFile);
             if (dockerFileDir == null && contextDir == null) {
                 return dFile;
-            } else {
-                if(contextDir != null) {
-                    if (dFile.isAbsolute()) {
-                        return dFile;
-                    }
-                    return new File(contextDir, dockerFile);
-                }
-
-                if (dockerFileDir != null) {
-                    if (dFile.isAbsolute()) {
-                        throw new IllegalArgumentException("<dockerFile> can not be absolute path if <dockerFileDir> also set.");
-                    }
-                    log.warn("dockerFileDir parameter is deprecated, please migrate to contextDir");
-                    return new File(dockerFileDir, dockerFile);
-                }
             }
+            if(contextDir != null) {
+                if (dFile.isAbsolute()) {
+                    return dFile;
+                }
+                return new File(contextDir, dockerFile);
+            }
+            if (dFile.isAbsolute()) {
+                throw new IllegalArgumentException("<dockerFile> can not be absolute path if <dockerFileDir> also set.");
+            }
+            log.warn("dockerFileDir parameter is deprecated, please migrate to contextDir");
+            return new File(dockerFileDir, dockerFile);
         }
-
 
         if (contextDir != null) {
             return new File(contextDir, "Dockerfile");
@@ -766,7 +904,7 @@ public class BuildImageConfiguration implements Serializable {
         // TODO: Remove the following deprecated handling section
         if (dockerArchive == null) {
             Optional<String> deprecatedDockerFileDir =
-                    getAssemblyConfigurations().stream()
+                    getAllAssemblyConfigurations().stream()
                             .map(AssemblyConfiguration::getDockerFileDir)
                             .filter(Objects::nonNull)
                             .findFirst();

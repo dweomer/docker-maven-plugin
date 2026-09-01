@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Properties;
 
 import org.apache.commons.text.StrSubstitutor;
-import org.apache.maven.shared.utils.StringUtils;
 
 import io.fabric8.maven.docker.access.DockerAccess;
 import io.fabric8.maven.docker.access.DockerAccessException;
@@ -28,6 +27,9 @@ import io.fabric8.maven.docker.wait.TcpPortChecker;
 import io.fabric8.maven.docker.wait.WaitChecker;
 import io.fabric8.maven.docker.wait.WaitTimeoutException;
 import io.fabric8.maven.docker.wait.WaitUtil;
+import org.codehaus.plexus.util.StringUtils;
+
+import static io.fabric8.maven.docker.StartMojo.DOCKER_START_CONTAINER_WAIT_TIMEOUT;
 
 /**
  * @author roland
@@ -57,6 +59,9 @@ public class WaitService {
                 WaitUtil.sleep(timeout);
             }
             return;
+        }
+        if (timeout == 0 && projectProperties.containsKey(DOCKER_START_CONTAINER_WAIT_TIMEOUT)) {
+            timeout = Integer.parseInt(projectProperties.getProperty(DOCKER_START_CONTAINER_WAIT_TIMEOUT, "0"));
         }
 
         String logLine = extractCheckerLog(checkers);
@@ -102,7 +107,7 @@ public class WaitService {
         List<WaitChecker> checkers = new ArrayList<>();
 
         if (wait.getUrl() != null) {
-            checkers.add(getUrlWaitChecker(imageConfig.getDescription(), projectProperties, wait));
+            checkers.add(getUrlWaitChecker(imageConfig.getDescription(), projectProperties, wait, log));
         }
 
         if (wait.getLog() != null) {
@@ -138,16 +143,17 @@ public class WaitService {
 
     private WaitChecker getUrlWaitChecker(String imageConfigDesc,
                                           Properties projectProperties,
-                                          WaitConfiguration wait) {
+                                          WaitConfiguration wait,
+                                          Logger log) {
         String waitUrl = StrSubstitutor.replace(wait.getUrl(), projectProperties);
         WaitConfiguration.HttpConfiguration httpConfig = wait.getHttp();
         HttpPingChecker checker;
         if (httpConfig != null) {
-            checker = new HttpPingChecker(waitUrl, httpConfig.getMethod(), httpConfig.getStatus(), httpConfig.isAllowAllHosts());
+            checker = new HttpPingChecker(waitUrl, httpConfig.getMethod(), httpConfig.getStatus(), httpConfig.isAllowAllHosts(), log);
             log.info("%s: Waiting on url %s with method %s for status %s.",
                      imageConfigDesc, waitUrl, httpConfig.getMethod(), httpConfig.getStatus());
         } else {
-            checker = new HttpPingChecker(waitUrl);
+            checker = new HttpPingChecker(waitUrl, log);
             log.info("%s: Waiting on url %s.", imageConfigDesc, waitUrl);
         }
         return checker;

@@ -67,8 +67,13 @@ public class StartMojo extends AbstractDockerMojo {
     @Parameter(property = "docker.startParallel", defaultValue = "false")
     private boolean startParallel;
 
-    // whether to block during to start. Set it via System property docker.follow
-    private boolean follow;
+    /**
+     * Whether to block and follow (stream) the container logs until interrupted. Can also be set
+     * via the {@code docker.follow} system property. When unset, the default is {@code false} for
+     * {@code docker:start} and {@code true} for {@code docker:run}.
+     */
+    @Parameter(property = "docker.follow")
+    protected Boolean follow;
 
     /**
      * Expose container information like the internal IP as Maven properties which
@@ -97,6 +102,17 @@ public class StartMojo extends AbstractDockerMojo {
      */
     @Parameter(property = "docker.autoCreateCustomNetworks", defaultValue = "false")
     protected boolean autoCreateCustomNetworks;
+
+    public static final String DOCKER_START_CONTAINER_WAIT_TIMEOUT = "docker.startContainerWaitTimeout";
+
+    /**
+     * Overrides the default across all the containers  wait time is milliseconds.
+     * Overriding that property might become particularly useful when docker-compose config defines
+     * the healthchecks, but the default wait timeout {@link io.fabric8.maven.docker.wait.WaitUtil#DEFAULT_MAX_WAIT}
+     * is too short for some containers to become healthy.
+     */
+    @Parameter(property = DOCKER_START_CONTAINER_WAIT_TIMEOUT, defaultValue = "10000")
+    protected int startContainerWaitTimeout = 10000;
 
     // property file to write out with port mappings
     @Parameter
@@ -220,7 +236,7 @@ public class StartMojo extends AbstractDockerMojo {
     }
 
     protected Boolean followLogs() {
-        return Boolean.valueOf(System.getProperty("docker.follow", "false"));
+        return follow != null ? follow : Boolean.FALSE;
     }
 
     // Check if we are done
@@ -234,6 +250,7 @@ public class StartMojo extends AbstractDockerMojo {
             try {
                 executorService.awaitTermination(10, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 log.warn("ExecutorService did not shutdown normally.");
                 executorService.shutdownNow();
             }
@@ -274,6 +291,7 @@ public class StartMojo extends AbstractDockerMojo {
         final Properties projProperties = project.getProperties();
         final RunImageConfiguration runConfig = imageConfig.getRunConfiguration();
         final PortMapping portMapping = runService.createPortMapping(runConfig, projProperties);
+        projProperties.computeIfAbsent(DOCKER_START_CONTAINER_WAIT_TIMEOUT, key -> String.valueOf(startContainerWaitTimeout));
         final LogDispatcher dispatcher = getLogDispatcher(hub);
 
         StartContainerExecutor startExecutor = new StartContainerExecutor.Builder()
@@ -330,10 +348,9 @@ public class StartMojo extends AbstractDockerMojo {
             final ImageConfiguration imageConfig = (ImageConfiguration) resolvable;
 
             // Still to check: How to work with linking, volumes, etc ....
-            //String imageName = new ImageName(imageConfig.getName()).getFullNameWithTag(registry);
             RegistryService registryService = hub.getRegistryService();
 
-            pullImage(queryService, registryService, imageConfig, pullRegistry);
+            pullImage(registryService, imageConfig, pullRegistry);
 
             RunImageConfiguration runConfig = imageConfig.getRunConfiguration();
             NetworkConfig config = runConfig.getNetworkingConfig();
